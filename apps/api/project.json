@@ -1,0 +1,9 @@
+{
+  "name": "api",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "targets": {
+    "dev": { "executor": "nx:run-commands", "options": { "command": "mvn spring-boot:run", "cwd": "apps/api" } },
+    "build": { "executor": "nx:run-commands", "outputs": ["{projectRoot}/target"], "options": { "command": "mvn -DskipTests package", "cwd": "apps/api" } }
+  }
+}

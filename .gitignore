@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.nx/
+coverage/
+target/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.log

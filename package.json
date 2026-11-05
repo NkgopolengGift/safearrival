@@ -1,0 +1,19 @@
+{
+  "name": "safearrival",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@12.15.0",
+  "scripts": {
+    "dev": "nx run web:dev",
+    "build": "nx run web:build",
+    "lint": "nx run web:lint",
+    "nx": "nx"
+  },
+  "devDependencies": {
+    "@nx/js": "latest",
+    "@nx/react": "latest",
+    "@nx/vite": "latest",
+    "nx": "latest",
+    "typescript": "latest"
+  }
+}
