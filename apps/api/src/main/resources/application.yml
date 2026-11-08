@@ -7,9 +7,25 @@ spring:
     password: ${DATABASE_PASSWORD:safearrival-local}
   flyway:
     enabled: true
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_APP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 15000
+      mail.smtp.writetimeout: 15000
 app:
   mode: ${APP_MODE:demo}
   expiry-poll-ms: ${EXPIRY_POLL_MS:1000}
+  base-url: ${APP_BASE_URL:http://localhost:5173}
+  data-encryption-key: ${DATA_ENCRYPTION_KEY:}
+  email-from: ${EMAIL_FROM:}
+  email-allowlist: ${LIVE_EMAIL_RECIPIENTS:}
 management:
   endpoints:
     web:

@@ -40,9 +40,9 @@ The API reads `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from 
 
 ## Current state
 
-The current demo supports server-persisted journey creation, check-in, cancellation, deadline extension, scheduled overdue processing, and a scoped contact notice/acknowledgement flow. Traveller/contact capabilities are random bearer tokens stored as hashes in PostgreSQL; the browser keeps the raw demo tokens in session storage. Two fictional contacts are seeded by the first Flyway migration.
+The demo supports server-persisted journeys, check-in, cancellation, extension, scheduled overdue processing, and scoped contact acknowledgement. Demo mode simulates notices. Live mode can send an overdue email through a dedicated Gmail SMTP sender, restricted to recipients in `LIVE_EMAIL_RECIPIENTS`. SMTP acceptance is not proof of inbox delivery; an ambiguous result is not retried automatically.
 
-The demo's only notification outcome is `SIMULATED`; it never contacts email, SMS, a trusted person, or emergency services. Location sharing, user accounts, multi-contact escalation, and external delivery remain out of scope. The core problem and proposed workflow remain hypotheses until the required interviews are synthesised.
+The traveller can explicitly share one current browser location fix. Coordinates are encrypted with AES-GCM under `DATA_ENCRYPTION_KEY`, visible only through the contact capability, and can be removed. They are not sent in email or captured in the background. The UI also offers direct `tel:` links for SAPS 10111 and mobile emergency 112; these are user-initiated calls, not app dispatch.
 
-For local development, start PostgreSQL with `docker compose up -d`, run `pnpm nx run api:dev`, then run `pnpm dev` in another terminal. The web dev server proxies `/api` to the API. See the root README for the complete steps.
+Capabilities are random bearer tokens stored as SHA-256 hashes in PostgreSQL. Demo contacts are fictional and seeded by the first Flyway migration. The core problem and proposed workflow remain hypotheses until the required interviews are synthesised. For run commands and live-only environment setup, see the root README.
 

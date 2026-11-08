@@ -40,6 +40,6 @@ The API reads `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from 
 
 ## Current state
 
-The demo implements server-persisted journeys, check-in, cancellation, deadline extension, scheduled overdue processing, and a scoped contact notice/acknowledgement flow. It uses random bearer capabilities stored as hashes in PostgreSQL and two fictional seeded contacts. External notifications, location, and account registration are not implemented. Alerts are always simulated.
+The system supports server-persisted journeys and contact acknowledgements. Demo mode simulates notices. Live mode can send overdue email through Gmail SMTP to an environment allowlist. One-time location sharing is explicitly user initiated, encrypted at rest, and shown only through the scoped contact capability. User accounts, background tracking, multi-contact escalation, and automatic emergency dispatch are not implemented. The product hypothesis remains unvalidated until the required interviews are synthesised.
 
-Start the database with `docker compose up -d`, then run `pnpm nx run api:dev` and `pnpm dev` in separate terminals. The web dev server proxies `/api` to the API. The proposed problem and workflow remain unvalidated until the required interviews are synthesised.
+Start the database with `docker compose up -d`, then run `pnpm nx run api:dev` and `pnpm dev` in separate terminals. For live email/location environment setup, see the root README.

@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Email;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -70,6 +71,21 @@ public class JourneyController {
         return journeys.simulateExpiry(id, bearerToken(authorization));
     }
 
+    @PostMapping("/journeys/{id}/location")
+    public JourneyView shareLocation(
+        @PathVariable UUID id,
+        @RequestHeader("Authorization") String authorization,
+        @Valid @RequestBody ShareLocationRequest request
+    ) {
+        if (!request.consent()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LOCATION_CONSENT_REQUIRED");
+        return journeys.shareLocation(id, bearerToken(authorization), request);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/journeys/{id}/location")
+    public JourneyView removeLocation(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
+        return journeys.removeLocation(id, bearerToken(authorization));
+    }
+
     @GetMapping("/contact-alert")
     public ContactAlertView contactAlert(@RequestHeader("Authorization") String authorization) {
         return journeys.contactView(bearerToken(authorization));
@@ -89,16 +105,20 @@ public class JourneyController {
 
     public record DemoContact(String id, String name, String relation, String initials, String color) {}
 
-    public record ConsentRequest(boolean contactMayBeNotifiedIfOverdue) {}
+    public record ConsentRequest(boolean contactMayBeNotifiedIfOverdue, boolean emailAlertConsent) {}
 
     public record StartJourneyRequest(
         @NotBlank @Size(max = 48) String destinationLabel,
-        @NotBlank @Size(max = 40) String trustedContactId,
+        @Size(max = 40) String trustedContactId,
+        @Size(max = 80) String trustedContactName,
+        @Email @Size(max = 254) String contactEmail,
         @Min(5) @Max(90) int arrivalWindowMinutes,
         @NotNull ConsentRequest consent
     ) {}
 
     public record ExtendJourneyRequest(@Min(1) @Max(60) int minutes) {}
+
+    public record ShareLocationRequest(double latitude, double longitude, int accuracyMeters, Instant capturedAt, boolean consent) {}
 
     public record JourneyView(
         UUID id,
@@ -111,7 +131,10 @@ public class JourneyController {
         Instant overdueAt,
         String notificationStatus,
         String travellerToken,
-        String contactToken
+        String contactToken,
+        boolean locationShared,
+        Instant locationCapturedAt,
+        Integer locationAccuracyMeters
     ) {}
 
     public record ContactAlertView(
@@ -122,6 +145,9 @@ public class JourneyController {
         Instant deadlineAt,
         Instant overdueAt,
         Instant acknowledgedAt,
-        String notificationStatus
+        String notificationStatus,
+        SharedLocation location
     ) {}
+
+    public record SharedLocation(double latitude, double longitude, int accuracyMeters, Instant capturedAt) {}
 }

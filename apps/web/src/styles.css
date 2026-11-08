@@ -26,6 +26,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .brand-mark span { width: 11px; height: 14px; border: 2px solid #fff; border-radius: 8px 8px 8px 2px; transform: rotate(3deg); }
 .demo-pill { margin-left: auto; display: flex; align-items: center; gap: 7px; padding: 7px 10px; color: #718079; background: #f0f3f0; border-radius: 999px; font-size: 9px; font-weight: 800; letter-spacing: 1px; }
 .demo-pill span { width: 6px; height: 6px; border-radius: 50%; background: #d79554; }
+.demo-pill.live span { background: #368465; }
 .avatar-button { border: 0; width: 33px; height: 33px; border-radius: 50%; color: #507262; background: #e7eee8; font-size: 12px; font-weight: 700; }
 .page-wrap { width: min(100% - 48px, 1020px); margin: 0 auto; padding-top: 56px; }
 .page-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
@@ -54,6 +55,10 @@ h1 { margin: 0; color: #24332c; font-size: clamp(30px, 4vw, 40px); line-height: 
 .input-wrap > span { font-size: 18px; line-height: 1; }
 .input-wrap input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; color: #344239; background: transparent; font-size: 13px; }
 .input-wrap input::placeholder { color: #b1b9b2; }
+.plain-input { width: 100%; height: 42px; margin: 0 0 12px; padding: 0 12px; border: 1px solid #dfe5df; border-radius: 8px; color: #344239; background: #fff; font-size: 12px; }
+.plain-input::placeholder { color: #a7b1a9; }
+.consent-check { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; color: #728078; font-size: 10px; line-height: 1.55; }
+.consent-check input { flex: none; width: 14px; height: 14px; margin: 1px 0 0; accent-color: #28765e; }
 .field-hint { margin: 6px 0 22px; color: #9aa39c; font-size: 10px; }
 .contact-label { margin-bottom: 10px; }
 .contact-options { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
@@ -79,6 +84,8 @@ h1 { margin: 0; color: #24332c; font-size: clamp(30px, 4vw, 40px); line-height: 
 .button:active { transform: translateY(1px); }
 .button-primary { color: white; background: #28765e; box-shadow: 0 3px 8px #24684f22; }
 .button-primary:hover:not(:disabled) { background: #20654f; }
+.button-secondary { color: #426e57; border-color: #dce8de; background: #f7faf7; }
+.button-secondary:hover:not(:disabled) { background: #edf5ef; }
 .button:disabled { cursor: default; opacity: .75; }
 .full-button { width: 100%; }
 .start-button { justify-content: space-between; padding: 0 16px; }
@@ -110,6 +117,10 @@ h1 { margin: 0; color: #24332c; font-size: clamp(30px, 4vw, 40px); line-height: 
 .muted-label { color: #9aa39c; font-size: 9px; }
 .journey-destination strong { color: #3b4740; font-size: 12px; }
 .journey-contact .contact-avatar { width: 29px; height: 29px; }
+.location-control { margin: 9px 0 2px; padding: 11px 12px; border: 1px solid #e9eee9; border-radius: 9px; background: #fbfcfb; }
+.location-control p { margin: 0 0 6px; color: #7c8980; font-size: 10px; line-height: 1.5; }
+.location-control .button { margin-top: 7px; }
+.location-control .text-button { padding-left: 0; }
 .contact-check { color: #4d8b69; font-size: 14px; }
 .journey-card > .full-button { margin-top: 13px; }
 .simulate-button { display: block; margin: 9px auto 0; }
@@ -130,6 +141,17 @@ h1 { margin: 0; color: #24332c; font-size: clamp(30px, 4vw, 40px); line-height: 
 .alert-detail strong { color: #58665d; font-size: 10px; }
 .contact-preview .full-button { margin-top: 14px; }
 .fine-print { margin: 12px 0 0; color: #9ba39d; text-align: center; font-size: 9px; line-height: 1.5; }
+.shared-location { margin: 13px 0; padding: 12px; border: 1px solid #e3ebe4; border-radius: 9px; background: #f8fbf8; }
+.shared-location .section-kicker { margin-bottom: 6px; }
+.shared-location p { margin: 0 0 8px; color: #697a6d; font-size: 10px; }
+.shared-location a { color: #347353; font-size: 10px; font-weight: 700; }
+.shared-location small { display: block; margin-top: 6px; color: #98a39a; font-size: 9px; }
+.emergency-panel { margin: 15px 0 4px; padding: 13px; border: 1px solid #f0e1d5; border-radius: 9px; background: #fffaf6; }
+.emergency-panel > strong { color: #6a5145; font-size: 11px; }
+.emergency-panel p { margin: 5px 0 9px; color: #897c73; font-size: 10px; line-height: 1.5; }
+.emergency-panel > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.emergency-panel a { padding: 8px 10px; border: 1px solid #edd8c9; border-radius: 7px; color: #825944; background: #fff; font-size: 10px; font-weight: 750; text-decoration: none; }
+.emergency-panel a:hover { background: #fdf1e8; }
 .empty-contact, .finished-card { text-align: center; }
 .empty-contact { padding: 14px 12px 9px; }
 .empty-contact .quiet-icon, .finished-card .quiet-icon { margin: 0 auto 16px; }

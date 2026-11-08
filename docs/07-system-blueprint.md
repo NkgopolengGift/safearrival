@@ -16,7 +16,7 @@ SafeArrival lets a person set a journey arrival window and choose a trusted cont
 - Start, view, extend, confirm, and cancel a journey.
 - User-chosen arrival grace period and one trusted contact in the MVP; multiple contacts are a later extension.
 - Server-owned deadline and durable overdue/notification-attempt records.
-- Honest notification delivery status and retry-safe processing.
+- Honest notification status; SMTP ambiguity is recorded without an automatic resend.
 - Minimal journey information and optional last shared location only when the user explicitly shares it.
 - Fictional seed/demo data and a clearly marked demo mode for walkthroughs.
 - Accessibility, clear failure states, and an audit trail for journey state changes.
@@ -50,7 +50,7 @@ SafeArrival lets a person set a journey arrival window and choose a trusted cont
 | P0-1 | Start a journey | Traveller can provide a destination label, choose an allowed arrival window, select one contact, review consent, and start. The server returns the stored start/deadline and journey reference. |
 | P0-2 | Manage an active journey | Traveller can see remaining time/deadline, confirm safely inside, cancel, or extend the window. A journey has one active state transition at a time; repeated requests do not create duplicate events. |
 | P0-3 | Expire overdue journeys | A backend worker finds due active journeys and atomically transitions each once to `OVERDUE`; browser closure does not stop the deadline. |
-| P0-4 | Notify a contact | When enabled, the system creates a durable notification attempt containing only the agreed minimum context. Retries are idempotent. Failed delivery is visible as failed/unknown, never as delivered. Demo mode never sends externally. |
+| P0-4 | Notify a contact | In live mode, the system queues one Gmail SMTP notice for an allowlisted recipient. Failed delivery is visible as failed/unknown, never as delivered; ambiguous sends are not retried. Demo mode never sends externally. |
 | P0-5 | Contact response | A contact can open a protected notice, see that a check-in is overdue (not that danger is confirmed), and acknowledge that they saw it. Acknowledgement is recorded with time. |
 | P0-6 | Honest status and safety copy | UI differentiates active, overdue, acknowledged, cancelled, completed, and failed delivery. It says the service does not dispatch responders or guarantee delivery. |
 | P0-7 | Data minimisation | No location is collected by default. If location is explicitly enabled, store only the latest user-shared fix with captured time and accuracy, associated with an active journey. |
@@ -95,7 +95,7 @@ All forms need labels, keyboard-operable controls, visible focus, clear inline e
 5. Traveller may extend the deadline or cancel before expiry. Each change is authenticated, validated, recorded, and returned with the new server deadline/state.
 6. If the traveller explicitly presses “I’m safely inside” before expiry, the API changes state to `COMPLETED`; no alert is sent.
 7. A scheduled worker claims due active journeys, changes each to `OVERDUE` exactly once, appends an event, and enqueues notification work in the same database transaction (transactional outbox).
-8. The delivery worker sends a minimal notice using the selected provider. It updates attempt state to `SENT`, `FAILED`, or `UNKNOWN` based on provider response. Retries use a stable idempotency key. Demo mode writes a simulated attempt only.
+8. The delivery worker sends a minimal Gmail SMTP notice in live mode. It updates attempt state to `SENT`, `FAILED`, or `UNKNOWN`. SMTP acceptance is not proof of inbox delivery; ambiguous sends are not retried automatically because SMTP has no idempotency key. Demo mode writes a simulated attempt only.
 9. Contact opens a signed, scoped, expiring link and sees the overdue message, journey start/deadline, and any explicitly shared last location (with timestamp/accuracy). They may acknowledge receipt. The acknowledgement is not a confirmation of safety.
 10. Traveller can still complete/cancel an overdue journey. That updates the contact view and, if configured, may send a resolution update. This behavior and copy are **Open** for interview validation.
 
@@ -157,8 +157,8 @@ flowchart TB
 | Web | Existing React + Vite + TypeScript app; screens, form validation, countdown display, API calls, status and errors. No authority over deadlines. |
 | API | Java 21 / Spring Boot service; validation, capability authorization, journey state transitions, contact views, worker scheduling, and a simulated notification adapter. |
 | Database | PostgreSQL through Spring JDBC; Flyway migrations own schema. Never use production auto schema mutation. |
-| Worker | Scheduled task in the API process. Conditional database updates make deadline transitions idempotent across overlapping worker runs. Hosting continuity still needs verification before deployment. |
-| Notifications | Adapter interface. **Open:** choose email or SMS and verify provider, cost, delivery receipts, and test-mode limits before live use. |
+| Worker | Scheduled tasks in the API process. Conditional database updates make deadline transitions idempotent across overlapping worker runs. Hosting continuity still needs verification before deployment. |
+| Notifications | Gmail SMTP email sender in live mode; simulated in demo mode. Email status means SMTP accepted, not inbox delivery. Ambiguous SMTP outcomes are marked `UNKNOWN` and are not automatically retried because SMTP provides no idempotency key. |
 | Hosting | **Open:** verify a host for Java 21, persistent scheduling, outbound provider connectivity, HTTPS, secrets, free-tier limits/sleep, and database networking. |
 
 Use same-origin `/api` routing where practical. If frontend and API are separately hosted, configure a narrow explicit CORS allowlist; do not allow arbitrary origins with credentials.
@@ -264,7 +264,7 @@ erDiagram
 
 - Store only what the flow needs. Do not store route history, location trails, alleged incident details, or contact-book imports.
 - `destination_label` is a short user-provided label (for example “Home”), not an address by default.
-- Contact destination (email/phone) is sensitive. Encrypt at rest using hosting/database controls and, if practical, application-level encryption with a separately managed key. Never log it.
+- Contact email is sensitive. Live-mode addresses and queued send payloads are encrypted at rest with AES-GCM under `DATA_ENCRYPTION_KEY`; never log them. Key rotation is not implemented.
 - `access_token_hash` stores a hash of a high-entropy, one-time or expiring contact capability; raw link tokens are shown once and are never stored/logged. Scope it to one alert and contact view.
 - `safe_metadata` must be an allowlisted small set of non-sensitive fields, not arbitrary request bodies.
 - Use migrations (Flyway or Liquibase; choose one before API build). Include constraints and indexes on due journey lookup `(status, deadline_at)`, contact lookup, traveller history, and alert token hash.
@@ -409,7 +409,7 @@ Use explicit enums, not arbitrary strings:
 - `journey_event.event_type`: `STARTED`, `DEADLINE_EXTENDED`, `OVERDUE`, `CHECKED_IN`, `CANCELLED`, `CONTACT_ACKNOWLEDGED`, `LOCATION_SHARED`, `DATA_DELETED`.
 - `journey_event.actor_type`: `TRAVELLER`, `CONTACT`, `SYSTEM`, `ADMIN` (admin actions should be rare and audited).
 - `alert.status`: `PENDING`, `OPENED`, `ACKNOWLEDGED`, `REVOKED`, `EXPIRED`.
-- `notification_outbox.status`: `QUEUED`, `SENDING`, `COMPLETE`, `FAILED`, `PAUSED`.
+- `notification_outbox.status`: `QUEUED`, `SENDING`, `SENT`, `UNKNOWN`, `FAILED`, `CANCELLED`, `SIMULATED`.
 - `notification_attempt.outcome`: `ACCEPTED`, `REJECTED`, `UNKNOWN`, `SIMULATED`.
 - `trusted_contact.channel`: initially `EMAIL` or `SMS`; one channel may be disabled until selected.
 
@@ -434,8 +434,8 @@ Required constraints/indexes:
 | `journey.version` | Monotonic optimistic-lock version for concurrent traveller/worker transitions. |
 | `journey_event.safe_metadata` | Allowlisted transition metadata, such as prior/new deadline or delivery status category; never raw request body, coordinates, or contact destination. |
 | `alert.access_token_hash` | Hash of capability whose scope is this one alert. Revoke/expire by clearing or marking it invalid; do not reuse tokens across alerts. |
-| `notification_outbox.available_at` | Earliest retry time. Worker only claims queued rows due at or before this time. |
-| `notification_outbox.lease_until` | Recovery point for a worker that crashes while sending; expired leases may be reclaimed subject to idempotency handling. |
+| `notification_outbox.available_at` | Earliest eligible send time. Current implementation queues immediately and does not retry. |
+| `notification_outbox.lease_until` | Recovery point for a worker that crashes while sending; an expired send becomes `UNKNOWN` and is not reclaimed. |
 | `notification_attempt.provider_message_id` | Provider-side reference, when returned; treat as operational metadata and limit retention. |
 | `shared_location.captured_at` / `accuracy_m` | Time and reported uncertainty for a user-triggered fix; never imply continuous/live location. |
 
@@ -499,8 +499,8 @@ For either mode:
 
 ### Reliability and failure behavior
 
-- Outbox pattern prevents an expiry commit from being separated from its queued notice. Each outbox row represents one logical message; each send/retry outcome is a separate immutable attempt row.
-- A unique alert/idempotency key and locked/leased due-row claiming prevent duplicate alerts across retries or multiple API instances.
+- Outbox pattern prevents an expiry commit from being separated from its queued notice. Each outbox row represents one logical message; each send outcome is a separate attempt row.
+- Locked/leased due-row claiming prevents concurrent workers from claiming the same queued message. SMTP's lack of an idempotency key means ambiguous sends are not retried.
 - On provider timeout, status is `UNKNOWN` until reconciled; do not claim it failed or delivered without evidence.
 - If the API is down at deadline, the next worker run processes overdue items; record actual detection time and original deadline.
 - If no contact is configured or the provider is disabled, still record overdue state and clearly state no notice was sent.
@@ -510,16 +510,16 @@ For either mode:
 
 The outbox row is the durable source of work; provider callbacks are supporting evidence, not the sole record. Keep the alert state separate from delivery state.
 
-1. In the same transaction that changes a journey to `OVERDUE`, insert the `ALERT`, `JOURNEY_EVENT`, and one `NOTIFICATION_OUTBOX` row.
+1. In the same transaction that changes a journey to `OVERDUE`, insert the `ALERT`, `JOURNEY_EVENT`, and one `NOTIFICATION_OUTBOX` row. Live mode encrypts the recipient/link payload; demo mode records a simulated attempt.
 2. Worker claims a small batch using `FOR UPDATE SKIP LOCKED` (or an equivalent atomic lease), sets `SENDING` with a `lease_until`, and commits. Do not keep a database transaction open while making a network request.
-3. Send with a stable provider idempotency key derived from the notification attempt ID. Message content includes the app name, that a check-in is overdue, journey start/deadline in local display form, and a scoped link. Do not include a home address or coordinates in message preview.
-4. A provider acceptance response means `SENT`/accepted by provider, not that a person read it. Delivery receipt, if supported and verified, can add a separate receipt timestamp.
-5. Persist each outcome as a new immutable `NOTIFICATION_ATTEMPT`. For transient connection errors, rate limits, and provider 5xx, return the outbox row to `QUEUED` with exponential backoff (`available_at`; proposed 1, 5, 15, 60 minutes; max 4 attempts plus provider-specific `Retry-After`). Do not retry permanent invalid-destination or rejected-consent errors.
-6. A timeout after request transmission is ambiguous: record an `UNKNOWN` attempt, query/reconcile with provider if available, and retry only when the idempotency contract prevents duplicate sends. If no idempotency guarantee exists, avoid blind automatic retries; expose the uncertainty.
-7. After retry exhaustion, leave the journey `OVERDUE`, mark delivery `FAILED`, and surface this status to the traveller/contact view where appropriate. Never imply that escalation succeeded.
-8. Demo mode records `SIMULATED` and displays an in-app contact notice only. It must not call the provider adapter.
+3. Send a plain-text email with a scoped link. Do not include a home address or coordinates in the email.
+4. A normal SMTP send return means the relay accepted the message, not that it reached an inbox or was read.
+5. Persist the result as an immutable `NOTIFICATION_ATTEMPT`. `MailAuthenticationException` is recorded as `REJECTED`; other SMTP exceptions are `UNKNOWN` because delivery may have happened before the connection failed.
+6. Do not automatically retry an `UNKNOWN` or abandoned `SENDING` attempt; Gmail SMTP has no idempotency key and a retry could duplicate a safety alert. Surface the uncertainty to the traveller.
+7. If the traveller completes/cancels while an email is still queued, cancel that queued message. A message already accepted or in flight cannot be recalled; the scoped contact page shows the latest journey status.
+8. Demo mode records `SIMULATED` and displays an in-app contact notice only. It must not call the mail sender.
 
-The retry schedule, provider receipts, contact-facing delivery copy, and whether resolution notices are sent remain **Open** until a provider and user expectation are confirmed.
+Provider delivery receipts and whether resolution notices are sent remain **Open**. The prototype uses Gmail SMTP and does not automatically retry.
 
 ### Retention and deletion schedule (proposal)
 
@@ -575,9 +575,10 @@ Maintain separate local, staging/demo, and production-like environments. Names b
 | `DATABASE_USERNAME`, `DATABASE_PASSWORD` | yes for API | Restricted application DB role; not owner/admin role. |
 | `APP_BASE_URL` | yes | Canonical HTTPS frontend URL for generated alert links; reject unknown host headers. |
 | `APP_MODE` | yes | `demo` or `live`; demo prevents all external delivery. |
-| `TOKEN_HASH_KEY` | yes | Secret for capability-token lookup hashing; separate from DB credentials; rotation procedure required. |
-| `NOTIFICATION_PROVIDER` | live only | Selected adapter name; no provider selected yet. |
-| `NOTIFICATION_API_KEY` | live only | Provider credential, scoped to sending only. |
+| `MAIL_USERNAME`, `MAIL_APP_PASSWORD`, `EMAIL_FROM` | live only | Dedicated Gmail sender and App Password; never use the account's normal password. |
+| `LIVE_EMAIL_RECIPIENTS` | live only | Comma-separated recipients permitted in this accountless prototype. |
+| `DATA_ENCRYPTION_KEY` | live only | Base64-encoded 32-byte key for encrypted recipient payloads and shared location. |
+| `APP_BASE_URL` | yes | Canonical app URL; HTTPS required for hosted live mode. |
 | `CORS_ALLOWED_ORIGINS` | if cross-origin | Exact HTTPS origins, comma-separated; no wildcard with credentials. |
 | `PORT` | host-dependent | Bind port supplied by runtime. |
 
@@ -619,7 +620,7 @@ Startup must fail clearly when live mode lacks required secrets or notification 
 **Database restore**
 
 - Restore a backup to an isolated database first; validate schema and integrity before changing the production connection.
-- Reconcile restored notification outbox rows against provider idempotency records to avoid sending old alerts again.
+- Keep restored outbox rows paused during recovery; review queued and unknown notices before enabling the worker, since SMTP cannot provide idempotency reconciliation.
 - After recovery, run health and synthetic flow checks, then record recovery point/time and any missing messages.
 
 All runbooks assume a low-risk demo. A real product needs a named service owner, an incident contact, and a reviewed data-breach procedure before live users.
@@ -713,7 +714,7 @@ Before recording/submission, check that browser address bars, screen captures, c
 
 ### Phase 3 — Deadline and contact workflow
 
-- Implement due-journey worker, locking/lease, transition event, transactional outbox, provider adapter, retry and status reporting.
+- Implement due-journey worker, locking/lease, transition event, transactional outbox, Gmail SMTP sender, and honest status reporting. Do not retry ambiguous sends.
 - Implement scoped contact link and acknowledgement.
 - Verify cancellation/expiry race, duplicate worker, and provider outage behavior.
 
@@ -739,9 +740,9 @@ Before recording/submission, check that browser address bars, screen captures, c
 | D1 | Do interviews validate the gate/arrival grace-period problem? | Treat as a hypothesis; synthesize interview findings before claiming need. | Project team; anonymised interview synthesis. |
 | D2 | Is evaluator demo-only sufficient, or are real alerts mandatory? | Full simulated contact flow, clearly labelled, until assignment rubric confirms live alerts required. | Check assignment brief and supervisor. |
 | D3 | Account login or accountless capabilities? | Accountless for a short-lived demo; accounts for persistent real use. Never ship unscoped public journey IDs. | Team decision after threat/hosting review. |
-| D4 | Which channel/provider? | No real delivery until cost, South African delivery, sender setup, and consent are verified. | Provider comparison and delivery test. |
+| D4 | Which channel/provider? | Gmail SMTP in live prototype mode, with an explicit environment allowlist; this is a bounded demo sender, not a production mail service. | Dedicated Gmail account, App Password availability, approved-recipient test, and inbox check. |
 | D5 | What data retention period? | Keep only active journey data; delete detailed history quickly after completion, duration to be agreed. | User/supervisor and POPIA-informed review. |
-| D6 | Should location ever be shared? | Off by default; omit from MVP unless users identify it as necessary and risky trade-offs are explained. | Interviews and explicit consent design. |
+| D6 | Should location ever be shared? | Off by default; a one-time encrypted share is implemented only after explicit user action. Remove or revise after interview evidence. | Interviews and explicit consent design. |
 | D7 | What happens after contact acknowledgement or a late confirmation? | Acknowledge receipt only; do not infer safety. Confirm whether resolution notice should be sent. | Interview evidence. |
 | D8 | Which host and database plan? | Choose only after verifying Java runtime, always-on scheduler, DB networking, free limits, backups, and health endpoints. | Current provider documentation and deployment rehearsal. |
 | D9 | Can the worker run continuously? | Assume no until proven. Test host sleep/restart behavior; use managed scheduling or an always-on worker if necessary. | Deployment test. |
@@ -750,8 +751,10 @@ Before recording/submission, check that browser address bars, screen captures, c
 
 The repository contains an Nx/pnpm React/Vite frontend and a Spring Boot 3 / Java 21 API. The current implementation uses PostgreSQL with Flyway and JDBC (rather than JPA entities), random traveller/contact bearer capabilities stored as SHA-256 hashes, a server-owned journey deadline, scheduled overdue processing, an in-app simulated outbox record, and a contact acknowledgement view. The Vite dev server proxies `/api` to the local API. `compose.yaml` provides a local PostgreSQL service with demo-only credentials.
 
-The demo returns both scoped capabilities at journey creation so the same browser session can preview the traveller and contact roles. It stores those capabilities in `sessionStorage`, never sends an external notification, and does not collect location. The overdue simulation sets the deadline to server time; the scheduled worker performs the actual overdue transition. Terminal journey details are purged after seven days, and contact capabilities expire 72 hours after the configured deadline. These settings are demo implementation defaults, not a reviewed production retention policy.
+Demo mode returns both scoped capabilities at journey creation so one browser session can preview the traveller/contact roles. Live mode creates the contact capability only after overdue status and sends its link to an allowlisted email recipient. Gmail credentials, recipient allowlist, encryption key, and app URL are environment configuration; live mode refuses to start without them. A transactional outbox records send state. Since Gmail SMTP has no send idempotency key, an ambiguous or interrupted send is recorded as `UNKNOWN` and is never automatically retried.
 
-Accounts, contact management, real notification delivery, provider callbacks, hosting, and production key management are not implemented. The project remains a hypothesis until at least three affected-person interviews are synthesised. Frontend/API hosting and any live provider remain open decisions.
+The traveller can explicitly capture and share one current location fix. Coordinates are encrypted with AES-GCM using `DATA_ENCRYPTION_KEY`, omitted from email content, and exposed only through a scoped contact capability. The traveller can remove the fix; after journey completion/cancellation it is retained for at most 24 hours, and unresolved overdue records are purged after seven days. Contact capabilities expire 72 hours after alert creation. These are prototype defaults, not a reviewed production retention policy. The public emergency actions are manual `tel:` links to SAPS 10111 and mobile 112. No dispatch or response-partner integration exists.
+
+User accounts, contact verification, provider delivery receipts, a key rotation workflow, production hosting, and an authorized emergency response partner are not implemented. The project remains a hypothesis until at least three affected-person interviews are synthesised. The current live email recipient allowlist bounds this accountless prototype; remove that restriction only after user authentication, recipient verification, abuse controls, and a privacy review exist.
 
 Update `docs/05-product-and-technical-design.md` only after interviews and this blueprint's open decisions are resolved; retain it as the short research-led decision summary and use this document as the implementation specification.

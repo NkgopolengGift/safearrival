@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
 type Contact = { id: string; name: string; relation: string; initials: string; color: string };
+type RuntimeInfo = { mode: 'demo' | 'live'; emailNotificationsEnabled: boolean; locationSharingEnabled: boolean };
 type JourneyStatus = 'active' | 'overdue' | 'completed' | 'cancelled';
+type SharedLocation = { latitude: number; longitude: number; accuracyMeters: number; capturedAt: string };
 type ApiJourney = {
   id: string;
   destinationLabel: string;
@@ -14,6 +16,9 @@ type ApiJourney = {
   notificationStatus: string;
   travellerToken?: string | null;
   contactToken?: string | null;
+  locationShared: boolean;
+  locationCapturedAt: string | null;
+  locationAccuracyMeters: number | null;
 };
 type Journey = ApiJourney & { travellerToken: string; contactToken: string };
 type ContactNotice = {
@@ -25,6 +30,7 @@ type ContactNotice = {
   overdueAt: string | null;
   acknowledgedAt: string | null;
   notificationStatus: string;
+  location: SharedLocation | null;
 };
 
 const STORAGE_KEY = 'safearrival.demo.journey';
@@ -58,6 +64,13 @@ function readSavedJourney(): Journey | null {
   }
 }
 
+function readContactTokenFromFragment(): string {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const token = params.get('token') ?? '';
+  if (token) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  return token;
+}
+
 function mergeJourney(data: ApiJourney, current?: Journey | null): Journey {
   return {
     ...data,
@@ -75,11 +88,17 @@ export default function App() {
   const [destination, setDestination] = useState('Home');
   const [contactId, setContactId] = useState('maya');
   const [windowMinutes, setWindowMinutes] = useState(5);
+  const [trustedContactName, setTrustedContactName] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [emailConsent, setEmailConsent] = useState(false);
+  const [journeyConsent, setJourneyConsent] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [journey, setJourney] = useState<Journey | null>(readSavedJourney);
   const [contactNotice, setContactNotice] = useState<ContactNotice | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeInfo>({ mode: 'demo', emailNotificationsEnabled: false, locationSharingEnabled: false });
+  const [linkedContactToken] = useState(readContactTokenFromFragment);
   const [now, setNow] = useState(Date.now());
-  const [view, setView] = useState<'traveller' | 'contact'>('traveller');
+  const [view, setView] = useState<'traveller' | 'contact'>(() => linkedContactToken ? 'contact' : 'traveller');
   const [apiError, setApiError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -89,6 +108,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    api<RuntimeInfo>('/runtime').then(setRuntime).catch(() => setApiError('Can’t read the API runtime configuration.'));
     api<Contact[]>('/demo/contacts')
       .then((result) => { setContacts(result); if (result[0]) setContactId(result[0].id); })
       .catch(() => setApiError('Can’t reach the SafeArrival API. Start PostgreSQL and the API, then reload this page.'));
@@ -117,22 +137,24 @@ export default function App() {
     return () => window.clearInterval(poll);
   }, [journey?.id, journey?.status, refreshJourney]);
 
+  const contactCapability = linkedContactToken || journey?.contactToken || '';
+
   const refreshContact = useCallback(async () => {
-    if (!journey?.contactToken) return;
+    if (!contactCapability) return;
     try {
-      const notice = await api<ContactNotice>('/contact-alert', { token: journey.contactToken });
+      const notice = await api<ContactNotice>('/contact-alert', { token: contactCapability });
       setContactNotice(notice);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Could not load the contact notice.');
     }
-  }, [journey?.contactToken]);
+  }, [contactCapability]);
 
   useEffect(() => {
-    if (view !== 'contact' || !journey?.contactToken) return;
+    if (view !== 'contact' || !contactCapability) return;
     void refreshContact();
     const poll = window.setInterval(() => void refreshContact(), 3000);
     return () => window.clearInterval(poll);
-  }, [view, journey?.contactToken, refreshContact]);
+  }, [view, contactCapability, refreshContact]);
 
   const contact = contacts.find((item) => item.id === contactId) ?? contacts[0];
   const secondsLeft = journey ? Math.ceil((Date.parse(journey.deadlineAt) - now) / 1000) : 0;
@@ -148,13 +170,16 @@ export default function App() {
         method: 'POST',
         body: {
           destinationLabel: destination.trim(),
-          trustedContactId: contactId,
+          trustedContactId: runtime.emailNotificationsEnabled ? null : contactId,
+          trustedContactName: runtime.emailNotificationsEnabled ? trustedContactName.trim() : null,
+          contactEmail: runtime.emailNotificationsEnabled ? contactEmail.trim() : null,
           arrivalWindowMinutes: windowMinutes,
-          consent: { contactMayBeNotifiedIfOverdue: true },
+          consent: { contactMayBeNotifiedIfOverdue: journeyConsent, emailAlertConsent: emailConsent },
         },
       });
       setJourney(mergeJourney(started));
       setContactNotice(null);
+      setJourneyConsent(false);
       setView('traveller');
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Could not start the journey.');
@@ -182,14 +207,61 @@ export default function App() {
   }
 
   async function acknowledgeNotice() {
-    if (!journey) return;
+    if (!contactCapability) return;
     setBusy(true);
     try {
-      const notice = await api<ContactNotice>('/contact-alert/acknowledge', { method: 'POST', token: journey.contactToken });
+      const notice = await api<ContactNotice>('/contact-alert/acknowledge', { method: 'POST', token: contactCapability });
       setContactNotice(notice);
       setApiError('');
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Could not acknowledge the notice.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function shareCurrentLocation() {
+    if (!journey || !navigator.geolocation) {
+      setApiError('This browser does not provide location sharing.');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setApiError('Location sharing requires HTTPS (or localhost during development).');
+      return;
+    }
+    setBusy(true);
+    setApiError('');
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, maximumAge: 0, timeout: 15000 });
+      });
+      const updated = await api<ApiJourney>(`/journeys/${journey.id}/location`, {
+        method: 'POST', token: journey.travellerToken,
+        body: {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracyMeters: Math.ceil(position.coords.accuracy),
+          capturedAt: new Date(position.timestamp).toISOString(),
+          consent: true,
+        },
+      });
+      setJourney((current) => current ? mergeJourney(updated, current) : current);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Location could not be shared. Check browser permission and try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSharedLocation() {
+    if (!journey) return;
+    setBusy(true);
+    try {
+      const updated = await api<ApiJourney>(`/journeys/${journey.id}/location`, { method: 'DELETE', token: journey.travellerToken });
+      setJourney((current) => current ? mergeJourney(updated, current) : current);
+      setApiError('');
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Could not remove the shared location.');
     } finally {
       setBusy(false);
     }
@@ -209,7 +281,7 @@ export default function App() {
           <span className="brand-mark" aria-hidden="true"><span /></span>
           <span>safe<span className="brand-light">arrival</span></span>
         </a>
-        <div className="demo-pill"><span /> DEMO MODE</div>
+        <div className={`demo-pill ${runtime.mode}`}><span /> {runtime.emailNotificationsEnabled ? 'LIVE EMAIL' : 'DEMO MODE'}</div>
         <button className="avatar-button" type="button" aria-label="Demo profile">A</button>
       </header>
 
@@ -226,20 +298,22 @@ export default function App() {
           </div>
           <div className="view-switch" role="group" aria-label="Preview mode">
             <button className={view === 'traveller' ? 'selected' : ''} onClick={() => setView('traveller')} type="button">Traveller</button>
-            <button className={view === 'contact' ? 'selected' : ''} onClick={() => setView('contact')} type="button">Contact view</button>
+            <button className={view === 'contact' ? 'selected' : ''} onClick={() => setView('contact')} type="button" disabled={runtime.emailNotificationsEnabled && !linkedContactToken}>Contact view</button>
           </div>
         </div>
 
         <div className="demo-notice" role="note">
           <span className="notice-icon" aria-hidden="true">i</span>
-          <p><strong>Demo mode.</strong> Deadlines are stored and evaluated by the server. Alerts are simulated in this app; no messages or location are shared.</p>
+          {runtime.mode === 'live'
+            ? <p><strong>Live email mode.</strong> A real email may be sent to the approved recipient if the server marks this journey overdue. Location is shared only after you request it. Email does not guarantee delivery or emergency response.</p>
+            : <p><strong>Demo mode.</strong> Deadlines are stored and evaluated by the server. Alerts are simulated in this app; no email is sent. Location sharing is available only when encrypted storage is configured.</p>}
         </div>
 
         {apiError && <div className="api-error" role="alert"><strong>Something needs attention.</strong> {apiError}</div>}
 
         {view === 'contact' ? (
           <section className="contact-preview card">
-            <div className="card-topline"><span className="section-kicker">TRUSTED CONTACT VIEW</span><span className="demo-tag">SIMULATED</span></div>
+            <div className="card-topline"><span className="section-kicker">TRUSTED CONTACT VIEW</span><span className="demo-tag">{contactNotice?.notificationStatus === 'SIMULATED' ? 'SIMULATED' : 'PRIVATE LINK'}</span></div>
             {contactNotice?.status === 'OVERDUE' ? (
               <>
                 <div className="alert-symbol" aria-hidden="true">!</div>
@@ -248,16 +322,29 @@ export default function App() {
                 <p className="body-copy">Their journey to <strong>{contactNotice.destinationLabel}</strong> is past the arrival window. This can happen for many reasons; it does not confirm an emergency.</p>
                 <div className="alert-detail"><span>Journey status</span><strong>Overdue · demo alert</strong></div>
                 <div className="alert-detail"><span>Location</span><strong>Not shared</strong></div>
-                <div className="alert-detail"><span>Notification</span><strong>Simulated · no message sent</strong></div>
+                <div className="alert-detail"><span>Email status</span><strong>{contactNotice.notificationStatus === 'SENT' ? 'Accepted by Gmail SMTP; delivery not confirmed' : contactNotice.notificationStatus === 'QUEUED' ? 'Email queued' : contactNotice.notificationStatus === 'FAILED' ? 'Email not sent' : contactNotice.notificationStatus === 'UNKNOWN' ? 'Send result unknown; not retried' : contactNotice.notificationStatus === 'CANCELLED' ? 'Queued email cancelled before send' : 'Simulated · no message sent'}</strong></div>
+                {contactNotice.location && (
+                  <div className="shared-location">
+                    <p className="section-kicker">LAST LOCATION SHARED BY TRAVELLER</p>
+                    <p>±{contactNotice.location.accuracyMeters} m · {new Date(contactNotice.location.capturedAt).toLocaleString()}</p>
+                    <a href={`https://www.openstreetmap.org/?mlat=${contactNotice.location.latitude}&mlon=${contactNotice.location.longitude}#map=17/${contactNotice.location.latitude}/${contactNotice.location.longitude}`} target="_blank" rel="noreferrer">Open in OpenStreetMap ↗</a>
+                    <small>This opens a third-party map with the shared coordinates.</small>
+                  </div>
+                )}
+                <div className="emergency-panel">
+                  <strong>Need emergency help?</strong>
+                  <p>If there is an immediate emergency, call the appropriate service directly. This app does not dispatch responders.</p>
+                  <div><a href="tel:10111">Call SAPS 10111</a><a href="tel:112">Call 112 from a mobile</a></div>
+                </div>
                 <button className="button button-primary full-button" type="button" onClick={() => void acknowledgeNotice()} disabled={busy || !!contactNotice.acknowledgedAt}>
                   {contactNotice.acknowledgedAt ? 'Notice acknowledged' : busy ? 'Saving…' : 'Acknowledge notice'}
                 </button>
                 <p className="fine-print">Acknowledging means you saw this notice. It does not confirm the traveller is safe.</p>
               </>
             ) : contactNotice?.status === 'COMPLETED' ? (
-              <div className="empty-contact"><div className="quiet-icon success" aria-hidden="true">✓</div><h2>The traveller checked in</h2><p>This journey has been marked complete. The notice was simulated and no message was sent.</p></div>
+              <div className="empty-contact"><div className="quiet-icon success" aria-hidden="true">✓</div><h2>The traveller checked in</h2><p>This journey was marked complete after the overdue notice. That check-in is not proof of an emergency response.</p></div>
             ) : contactNotice?.status === 'CANCELLED' ? (
-              <div className="empty-contact"><div className="quiet-icon" aria-hidden="true">—</div><h2>Journey cancelled</h2><p>The traveller cancelled this demo journey. No message was sent.</p></div>
+              <div className="empty-contact"><div className="quiet-icon" aria-hidden="true">—</div><h2>Journey cancelled</h2><p>The traveller cancelled this journey. No resolution email is sent automatically.</p></div>
             ) : contactNotice ? (
               <div className="empty-contact"><div className="quiet-icon" aria-hidden="true">✓</div><h2>No overdue check-in</h2><p>The journey is still within its arrival window. This page will update if the server marks it overdue.</p></div>
             ) : (
@@ -273,23 +360,30 @@ export default function App() {
               </div>
               <div className="journey-destination"><span className="pin-icon" aria-hidden="true">⌖</span><div><span className="muted-label">Heading to</span><strong>{journey.destinationLabel}</strong></div></div>
               <div className="journey-contact"><span className={`contact-avatar ${contact?.color ?? 'lavender'}`}>{contact?.initials ?? 'TC'}</span><div><span className="muted-label">Trusted contact</span><strong>{journey.contactName}</strong></div><span className="contact-check" aria-label="Selected">✓</span></div>
+              <div className="location-control">
+                {journey.locationShared
+                  ? <><p>One-time location shared{journey.locationCapturedAt ? ` at ${new Date(journey.locationCapturedAt).toLocaleTimeString()}` : ''} (±{journey.locationAccuracyMeters ?? 'unknown'} m). It appears to your contact only if this journey becomes overdue.</p><button className="text-button" type="button" disabled={busy} onClick={() => void removeSharedLocation()}>Remove shared location</button></>
+                  : <p>{runtime.locationSharingEnabled ? 'Off by default. Share one current fix; it will appear to your contact only if this journey becomes overdue. No live tracking.' : 'Location sharing is unavailable until encrypted data storage is configured.'}</p>}
+                {!journey.locationShared && runtime.locationSharingEnabled && <button className="button button-secondary full-button" type="button" disabled={busy} onClick={() => void shareCurrentLocation()}>{busy ? 'Getting location…' : 'Share one-time location'}</button>}
+              </div>
               {status === 'active' ? (
                 <>
                   <button className="button button-primary full-button" type="button" disabled={busy} onClick={() => void journeyAction('check-in')}><span aria-hidden="true">✓</span> I’m safely inside</button>
-                  <button className="text-button simulate-button" type="button" disabled={busy} onClick={() => void journeyAction('demo/expire')}>Simulate a missed check-in</button>
+                  {runtime.mode === 'demo' && <button className="text-button simulate-button" type="button" disabled={busy} onClick={() => void journeyAction('demo/expire')}>Simulate a missed check-in</button>}
                   <button className="text-button simulate-button" type="button" disabled={busy} onClick={() => void journeyAction('extend', { minutes: 5 })}>Give me 5 more minutes</button>
                 </>
               ) : (
                 <div className="overdue-actions">
-                  <p>Your demo contact notice is ready in <button className="inline-link" onClick={() => setView('contact')} type="button">Contact view</button>.</p>
+                  <p>{runtime.mode === 'demo' ? <>Your simulated notice is in <button className="inline-link" onClick={() => setView('contact')} type="button">Contact view</button>.</> : `Email status: ${journey.notificationStatus}. Check the contact inbox; the app cannot confirm they read it.`}</p>
                   <button className="button button-primary full-button" type="button" disabled={busy} onClick={() => void journeyAction('check-in')}>I’m safely inside now</button>
                 </div>
               )}
               <button className="cancel-button" type="button" disabled={busy} onClick={() => void journeyAction('cancel')}>Cancel journey</button>
             </div>
             <aside className="side-notes">
-              <div className="side-card"><span className="side-icon mint" aria-hidden="true">✦</span><div><h3>A check-in, on your terms</h3><p>The server keeps the deadline. The contact notice stays simulated in this demo.</p></div></div>
+              <div className="side-card"><span className="side-icon mint" aria-hidden="true">✦</span><div><h3>A check-in, on your terms</h3><p>The server keeps the deadline. {runtime.mode === 'demo' ? 'Notices are simulated.' : 'Email is attempted after an overdue check-in.'}</p></div></div>
               <div className="side-card"><span className="side-icon sand" aria-hidden="true">⌁</span><div><h3>Plans can change</h3><p>A missed check-in can happen for many reasons. It is not proof that something is wrong.</p></div></div>
+              <div className="emergency-panel"><strong>Immediate danger?</strong><p>If you can call safely, contact emergency services directly. SafeArrival cannot dispatch help.</p><div><a href="tel:10111">SAPS 10111</a><a href="tel:112">112 from a mobile</a></div></div>
             </aside>
           </section>
         ) : journey && (status === 'completed' || status === 'cancelled') ? (
@@ -297,7 +391,7 @@ export default function App() {
             <div className={`quiet-icon ${status === 'completed' ? 'success' : ''}`}>{status === 'completed' ? '✓' : '—'}</div>
             <p className="eyebrow">{status === 'completed' ? 'CHECK-IN COMPLETE' : 'JOURNEY CANCELLED'}</p>
             <h2>{status === 'completed' ? 'Glad you made it in.' : 'Journey cancelled.'}</h2>
-            <p className="body-copy">This was a simulated check-in. No message was sent to {journey.contactName}.</p>
+            <p className="body-copy">This journey is complete. {journey.notificationStatus === 'SENT' ? 'Gmail accepted the overdue email; that does not confirm inbox delivery.' : `Email status: ${journey.notificationStatus}.`}</p>
             <button className="button button-primary" type="button" onClick={startAnotherJourney}>Start another journey</button>
           </section>
         ) : (
@@ -308,31 +402,44 @@ export default function App() {
               <div className="input-wrap"><span aria-hidden="true">⌖</span><input id="destination" maxLength={48} value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="e.g. Home" required /></div>
               <p className="field-hint">A short label is enough. No address needed.</p>
 
-              <label className="field-label contact-label">Who should know you arrived?</label>
-              <div className="contact-options" role="radiogroup" aria-label="Choose a trusted contact">
-                {contacts.map((item) => (
-                  <button className={`contact-option ${contactId === item.id ? 'active' : ''}`} key={item.id} type="button" role="radio" aria-checked={contactId === item.id} onClick={() => setContactId(item.id)}>
-                    <span className={`contact-avatar ${item.color}`}>{item.initials}</span><span className="contact-option-copy"><strong>{item.name}</strong><small>{item.relation} · Demo contact</small></span><span className="radio-dot" />
-                  </button>
-                ))}
-                {contacts.length === 0 && <p className="field-hint">Loading demo contacts from the API…</p>}
-              </div>
+              {runtime.emailNotificationsEnabled ? (
+                <>
+                  <label className="field-label contact-label" htmlFor="trusted-name">Trusted contact</label>
+                  <input className="plain-input" id="trusted-name" value={trustedContactName} onChange={(event) => setTrustedContactName(event.target.value)} maxLength={80} placeholder="Contact’s name" required />
+                  <label className="field-label contact-label" htmlFor="contact-email">Contact email</label>
+                  <input className="plain-input" id="contact-email" type="email" value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} maxLength={254} placeholder="name@example.com" required />
+                  <p className="field-hint">Live demo sends only to addresses approved in the server environment.</p>
+                  <label className="consent-check"><input type="checkbox" checked={emailConsent} onChange={(event) => setEmailConsent(event.target.checked)} required /><span>I have permission to share this email and notify this person if I miss my check-in.</span></label>
+                </>
+              ) : (
+                <>
+                  <label className="field-label contact-label">Who should know you arrived?</label>
+                  <div className="contact-options" role="radiogroup" aria-label="Choose a trusted contact">
+                    {contacts.map((item) => (
+                      <button className={`contact-option ${contactId === item.id ? 'active' : ''}`} key={item.id} type="button" role="radio" aria-checked={contactId === item.id} onClick={() => setContactId(item.id)}>
+                        <span className={`contact-avatar ${item.color}`}>{item.initials}</span><span className="contact-option-copy"><strong>{item.name}</strong><small>{item.relation} · Fictional contact</small></span><span className="radio-dot" />
+                      </button>
+                    ))}
+                    {contacts.length === 0 && <p className="field-hint">Loading demo contacts from the API…</p>}
+                  </div>
+                </>
+              )}
 
               <label className="field-label window-label" htmlFor="arrival-window">Arrival window</label>
               <div className="window-control"><span>Allow time to get inside</span><div className="select-wrap"><select id="arrival-window" value={windowMinutes} onChange={(event) => setWindowMinutes(Number(event.target.value))}><option value={5}>5 min</option><option value={10}>10 min</option><option value={15}>15 min</option><option value={20}>20 min</option></select><span aria-hidden="true">⌄</span></div></div>
-              <div className="consent-copy"><span aria-hidden="true">ⓘ</span><p>If this check-in becomes overdue, an in-app demo alert will be created. No external message or location is shared.</p></div>
-              <button className="button button-primary full-button start-button" type="submit" disabled={busy || !contact}>{busy ? 'Starting…' : 'Start journey'} <span aria-hidden="true">→</span></button>
-              <p className="form-footnote">Starting confirms this simulated contact alert behavior.</p>
+              <label className="consent-check"><input type="checkbox" checked={journeyConsent} onChange={(event) => setJourneyConsent(event.target.checked)} required /><span>{runtime.emailNotificationsEnabled ? 'I understand an overdue check-in may send the selected contact an email. Delivery is not guaranteed.' : 'I understand an overdue check-in creates a simulated notice and contacts nobody.'}</span></label>
+              <button className="button button-primary full-button start-button" type="submit" disabled={busy || (!runtime.emailNotificationsEnabled && !contact)}>{busy ? 'Starting…' : 'Start journey'} <span aria-hidden="true">→</span></button>
+              <p className="form-footnote">Location is never collected automatically. You can choose a one-time share during a journey.</p>
             </form>
             <aside className="side-notes setup-notes">
               <div className="side-card"><span className="side-icon mint" aria-hidden="true">✦</span><div><h3>Keep it simple</h3><p>Choose a window that feels right for your usual arrival routine.</p></div></div>
-              <div className="side-card"><span className="side-icon sand" aria-hidden="true">⌁</span><div><h3>Your privacy matters</h3><p>This demo uses fictional contacts and doesn’t request location.</p></div></div>
+              <div className="side-card"><span className="side-icon sand" aria-hidden="true">⌁</span><div><h3>Your privacy matters</h3><p>Location is off by default. You choose if and when to share one location fix.</p></div></div>
               <div className="quote-card"><span className="quote-mark">“</span><p>A missed check-in is a reason to check in — not a reason to assume.</p><span>SAFEARRIVAL PRINCIPLE</span></div>
             </aside>
           </section>
         )}
 
-        <footer className="page-footer"><span>SafeArrival <i>·</i> A check-in concept for the journey home</span><span>Demo · No emergency response</span></footer>
+        <footer className="page-footer"><span>SafeArrival <i>·</i> A check-in concept for the journey home</span><span>Contact alerts are not emergency dispatch</span></footer>
       </main>
     </div>
   );
