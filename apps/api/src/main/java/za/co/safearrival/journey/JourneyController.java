@@ -10,8 +10,10 @@ import jakarta.validation.constraints.Email;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import za.co.safearrival.auth.AuthService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,9 +26,11 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/v1")
 public class JourneyController {
     private final JourneyService journeys;
+    private final AuthService auth;
 
-    public JourneyController(JourneyService journeys) {
+    public JourneyController(JourneyService journeys, AuthService auth) {
         this.journeys = journeys;
+        this.auth = auth;
     }
 
     @GetMapping("/demo/contacts")
@@ -35,55 +39,68 @@ public class JourneyController {
     }
 
     @PostMapping("/journeys")
-    public JourneyView start(@Valid @RequestBody StartJourneyRequest request) {
+    public JourneyView start(@Valid @RequestBody StartJourneyRequest request,
+                             @CookieValue(name = "safe_arrival_session", required = false) String session) {
         if (!request.consent().contactMayBeNotifiedIfOverdue()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CONSENT_REQUIRED");
         }
-        return journeys.start(request);
+        return journeys.start(request, auth.userIdOrNull(session));
+    }
+
+    @GetMapping("/journeys")
+    public List<JourneyView> list(@CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.listOwned(auth.userIdOrNull(session));
     }
 
     @GetMapping("/journeys/{id}")
-    public JourneyView get(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
-        return journeys.get(id, bearerToken(authorization));
+    public JourneyView get(@PathVariable UUID id, @RequestHeader(value = "Authorization", required = false) String authorization,
+                           @CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.get(id, optionalBearerToken(authorization), auth.userIdOrNull(session));
     }
 
     @PostMapping("/journeys/{id}/check-in")
-    public JourneyView checkIn(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
-        return journeys.transition(id, bearerToken(authorization), JourneyService.Action.CHECK_IN, null);
+    public JourneyView checkIn(@PathVariable UUID id, @RequestHeader(value = "Authorization", required = false) String authorization,
+                               @CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.transition(id, optionalBearerToken(authorization), JourneyService.Action.CHECK_IN, null, auth.userIdOrNull(session));
     }
 
     @PostMapping("/journeys/{id}/cancel")
-    public JourneyView cancel(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
-        return journeys.transition(id, bearerToken(authorization), JourneyService.Action.CANCEL, null);
+    public JourneyView cancel(@PathVariable UUID id, @RequestHeader(value = "Authorization", required = false) String authorization,
+                              @CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.transition(id, optionalBearerToken(authorization), JourneyService.Action.CANCEL, null, auth.userIdOrNull(session));
     }
 
     @PostMapping("/journeys/{id}/extend")
     public JourneyView extend(
         @PathVariable UUID id,
-        @RequestHeader("Authorization") String authorization,
-        @Valid @RequestBody ExtendJourneyRequest request
+        @RequestHeader(value = "Authorization", required = false) String authorization,
+        @Valid @RequestBody ExtendJourneyRequest request,
+        @CookieValue(name = "safe_arrival_session", required = false) String session
     ) {
-        return journeys.transition(id, bearerToken(authorization), JourneyService.Action.EXTEND, request.minutes());
+        return journeys.transition(id, optionalBearerToken(authorization), JourneyService.Action.EXTEND, request.minutes(), auth.userIdOrNull(session));
     }
 
     @PostMapping("/journeys/{id}/demo/expire")
-    public JourneyView simulateExpiry(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
-        return journeys.simulateExpiry(id, bearerToken(authorization));
+    public JourneyView simulateExpiry(@PathVariable UUID id, @RequestHeader(value = "Authorization", required = false) String authorization,
+                                       @CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.simulateExpiry(id, optionalBearerToken(authorization), auth.userIdOrNull(session));
     }
 
     @PostMapping("/journeys/{id}/location")
     public JourneyView shareLocation(
         @PathVariable UUID id,
-        @RequestHeader("Authorization") String authorization,
-        @Valid @RequestBody ShareLocationRequest request
+        @RequestHeader(value = "Authorization", required = false) String authorization,
+        @Valid @RequestBody ShareLocationRequest request,
+        @CookieValue(name = "safe_arrival_session", required = false) String session
     ) {
         if (!request.consent()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LOCATION_CONSENT_REQUIRED");
-        return journeys.shareLocation(id, bearerToken(authorization), request);
+        return journeys.shareLocation(id, optionalBearerToken(authorization), request, auth.userIdOrNull(session));
     }
 
     @org.springframework.web.bind.annotation.DeleteMapping("/journeys/{id}/location")
-    public JourneyView removeLocation(@PathVariable UUID id, @RequestHeader("Authorization") String authorization) {
-        return journeys.removeLocation(id, bearerToken(authorization));
+    public JourneyView removeLocation(@PathVariable UUID id, @RequestHeader(value = "Authorization", required = false) String authorization,
+                                       @CookieValue(name = "safe_arrival_session", required = false) String session) {
+        return journeys.removeLocation(id, optionalBearerToken(authorization), auth.userIdOrNull(session));
     }
 
     @GetMapping("/contact-alert")
@@ -101,6 +118,11 @@ public class JourneyController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "INVALID_CAPABILITY");
         }
         return authorization.substring(7).trim();
+    }
+
+    private static String optionalBearerToken(String authorization) {
+        if (authorization == null || authorization.isBlank()) return null;
+        return bearerToken(authorization);
     }
 
     public record DemoContact(String id, String name, String relation, String initials, String color) {}

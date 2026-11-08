@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { AuthPage, MarketingPage, OnboardingPage } from './marketing';
+
+type Account = { id: string; email: string; displayName: string; onboardingComplete: boolean; timezone: string; defaultArrivalWindowMinutes: number };
 
 type Contact = { id: string; name: string; relation: string; initials: string; color: string };
 type RuntimeInfo = { mode: 'demo' | 'live'; emailNotificationsEnabled: boolean; locationSharingEnabled: boolean };
@@ -38,6 +43,7 @@ const STORAGE_KEY = 'safearrival.demo.journey';
 async function api<T>(path: string, options: { token?: string; method?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     method: options.method ?? 'GET',
+    credentials: 'include',
     headers: {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
@@ -52,6 +58,7 @@ async function api<T>(path: string, options: { token?: string; method?: string; 
     } catch { /* Keep the status-based error. */ }
     throw new Error(reason);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -84,7 +91,26 @@ function formatTime(seconds: number) {
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
 }
 
+function formatLocalTime(value: string, timezone?: string) {
+  return new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(value));
+}
+
+function formatLocalDate(value: string, timezone?: string) {
+  return new Intl.DateTimeFormat(undefined, { timeZone: timezone, month: 'short', day: 'numeric' }).format(new Date(value));
+}
+
+function getInitials(name: string) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'TC';
+}
+
 export default function App() {
+  const [linkedContactToken] = useState(readContactTokenFromFragment);
+  const [stage, setStage] = useState<'loading' | 'landing' | 'signin' | 'signup' | 'onboarding' | 'workspace'>(() => linkedContactToken ? 'workspace' : 'loading');
+  const [account, setAccount] = useState<Account | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [onboardingTimezone, setOnboardingTimezone] = useState('Africa/Johannesburg');
+  const [onboardingWindow, setOnboardingWindow] = useState(20);
   const [destination, setDestination] = useState('Home');
   const [contactId, setContactId] = useState('maya');
   const [windowMinutes, setWindowMinutes] = useState(5);
@@ -93,14 +119,31 @@ export default function App() {
   const [emailConsent, setEmailConsent] = useState(false);
   const [journeyConsent, setJourneyConsent] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [journeyHistory, setJourneyHistory] = useState<Journey[]>([]);
   const [journey, setJourney] = useState<Journey | null>(readSavedJourney);
   const [contactNotice, setContactNotice] = useState<ContactNotice | null>(null);
+  const [contactNoticeLoading, setContactNoticeLoading] = useState(!!linkedContactToken);
   const [runtime, setRuntime] = useState<RuntimeInfo>({ mode: 'demo', emailNotificationsEnabled: false, locationSharingEnabled: false });
-  const [linkedContactToken] = useState(readContactTokenFromFragment);
   const [now, setNow] = useState(Date.now());
   const [view, setView] = useState<'traveller' | 'contact'>(() => linkedContactToken ? 'contact' : 'traveller');
   const [apiError, setApiError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (linkedContactToken) return;
+    api<Account>('/auth/me').then((current) => {
+      setAccount(current);
+      setOnboardingTimezone(current.timezone);
+      setOnboardingWindow(current.defaultArrivalWindowMinutes);
+      setWindowMinutes(current.defaultArrivalWindowMinutes);
+      setStage(current.onboardingComplete ? 'workspace' : 'onboarding');
+      api<ApiJourney[]>('/journeys').then((items) => {
+        setJourneyHistory(items.map((item) => mergeJourney(item)));
+        const active = items.find((item) => ['ACTIVE', 'OVERDUE'].includes(item.status.toUpperCase()));
+        setJourney(active ? mergeJourney(active) : null);
+      }).catch(() => undefined);
+    }).catch(() => setStage('landing'));
+  }, [linkedContactToken]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -144,8 +187,10 @@ export default function App() {
     try {
       const notice = await api<ContactNotice>('/contact-alert', { token: contactCapability });
       setContactNotice(notice);
+      setContactNoticeLoading(false);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Could not load the contact notice.');
+      setContactNoticeLoading(false);
     }
   }, [contactCapability]);
 
@@ -157,9 +202,63 @@ export default function App() {
   }, [view, contactCapability, refreshContact]);
 
   const contact = contacts.find((item) => item.id === contactId) ?? contacts[0];
+  const journeyContact = contacts.find((item) => item.name === journey?.contactName);
   const secondsLeft = journey ? Math.ceil((Date.parse(journey.deadlineAt) - now) / 1000) : 0;
   const status = journey?.status.toLowerCase() as JourneyStatus | undefined;
   const hasJourney = !!journey && (status === 'active' || status === 'overdue');
+
+  async function submitAuthentication(values: { displayName: string; email: string; password: string }) {
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      const route = stage === 'signup' ? '/auth/register' : '/auth/login';
+      const signedIn = await api<Account>(route, { method: 'POST', body: values });
+      setAccount(signedIn);
+      setOnboardingTimezone(signedIn.timezone);
+      setOnboardingWindow(signedIn.defaultArrivalWindowMinutes);
+      setWindowMinutes(signedIn.defaultArrivalWindowMinutes);
+      setStage(signedIn.onboardingComplete ? 'workspace' : 'onboarding');
+      if (route === '/auth/register') { setJourney(null); setJourneyHistory([]); }
+      else if (signedIn.onboardingComplete) {
+        const items = await api<ApiJourney[]>('/journeys');
+        setJourneyHistory(items.map((item) => mergeJourney(item)));
+        const active = items.find((item) => ['ACTIVE', 'OVERDUE'].includes(item.status.toUpperCase()));
+        setJourney(active ? mergeJourney(active) : null);
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'We couldn’t sign you in. Please try again.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function completeOnboarding() {
+    setAuthBusy(true);
+    setAuthError('');
+    try {
+      const updated = await api<Account>('/auth/onboarding', { method: 'POST', body: { timezone: onboardingTimezone, defaultArrivalWindowMinutes: onboardingWindow } });
+      setAccount(updated);
+      setWindowMinutes(updated.defaultArrivalWindowMinutes);
+      setStage('workspace');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Could not save your preferences.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    try { await api<void>('/auth/logout', { method: 'POST' }); } catch { /* Local state still ends this session. */ }
+    setAccount(null);
+    setJourney(null);
+    setJourneyHistory([]);
+    setStage('landing');
+  }
+
+  if (stage === 'loading' && !linkedContactToken) return <div className="app-loading"><span className="sa-brand-icon"><span /></span><p>Opening your SafeArrival space…</p></div>;
+  if (stage === 'landing') return <MarketingPage onSignUp={() => setStage('signup')} onSignIn={() => setStage('signin')} />;
+  if (stage === 'signin' || stage === 'signup') return <AuthPage mode={stage} busy={authBusy} error={authError} onSubmit={(values) => void submitAuthentication(values)} onSwitch={() => { setAuthError(''); setStage(stage === 'signin' ? 'signup' : 'signin'); }} onHome={() => setStage('landing')} />;
+  if (stage === 'onboarding' && account) return <OnboardingPage name={account.displayName} timezone={onboardingTimezone} arrivalWindow={onboardingWindow} busy={authBusy} error={authError} onChangeTimezone={setOnboardingTimezone} onChangeWindow={setOnboardingWindow} onComplete={() => void completeOnboarding()} onLogout={() => void signOut()} />;
 
   async function startJourney(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -178,6 +277,7 @@ export default function App() {
         },
       });
       setJourney(mergeJourney(started));
+      setJourneyHistory((items) => [mergeJourney(started), ...items.filter((item) => item.id !== started.id)]);
       setContactNotice(null);
       setJourneyConsent(false);
       setView('traveller');
@@ -197,6 +297,7 @@ export default function App() {
         method: 'POST', token: journey.travellerToken, ...(body ? { body } : {}),
       });
       setJourney((current) => current ? mergeJourney(updated, current) : current);
+      setJourneyHistory((items) => items.map((item) => item.id === updated.id ? mergeJourney(updated, item) : item));
       if (path === 'check-in' || path === 'cancel') await refreshContact();
     } catch (error) {
       setApiError(error instanceof Error ? error.message : 'Could not update the journey.');
@@ -282,24 +383,24 @@ export default function App() {
           <span>safe<span className="brand-light">arrival</span></span>
         </a>
         <div className={`demo-pill ${runtime.mode}`}><span /> {runtime.emailNotificationsEnabled ? 'LIVE EMAIL' : 'DEMO MODE'}</div>
-        <button className="avatar-button" type="button" aria-label="Demo profile">A</button>
+        {account && <div className="account-menu"><span className="account-name">{account.displayName}</span><span className="avatar-button" aria-hidden="true">{account.displayName.slice(0, 1).toUpperCase()}</span><button className="workspace-signout" type="button" onClick={() => void signOut()}>Sign out</button></div>}
       </header>
 
       <main className="page-wrap">
         <div className="page-heading">
           <div>
             <p className="eyebrow">A little more peace of mind</p>
-            <h1>{view === 'contact' ? 'A check-in to notice' : hasJourney ? 'Your journey' : 'Get there. Check in.'}</h1>
+            <h1>{view === 'contact' ? 'A check-in to notice' : hasJourney ? 'Your journey' : account ? `${journeyHistory.length ? 'Welcome back' : 'Welcome'}, ${account.displayName.split(' ')[0]}.` : 'Get there. Check in.'}</h1>
             <p className="heading-copy">
               {view === 'contact'
                 ? 'See what a trusted contact would receive if a check-in became overdue.'
-                : 'A simple way to let someone you trust know you made it in.'}
+                : account ? 'Your private space for planning a journey and checking in.' : 'A simple way to let someone you trust know you made it in.'}
             </p>
           </div>
-          <div className="view-switch" role="group" aria-label="Preview mode">
-            <button className={view === 'traveller' ? 'selected' : ''} onClick={() => setView('traveller')} type="button">Traveller</button>
-            <button className={view === 'contact' ? 'selected' : ''} onClick={() => setView('contact')} type="button" disabled={runtime.emailNotificationsEnabled && !linkedContactToken}>Contact view</button>
-          </div>
+          {runtime.mode === 'demo' && <div className="view-switch" role="group" aria-label="Preview mode">
+            <button className={view === 'traveller' ? 'selected' : ''} onClick={() => setView('traveller')} type="button" aria-pressed={view === 'traveller'}>Traveller</button>
+            <button className={view === 'contact' ? 'selected' : ''} onClick={() => { if (!contactNotice && contactCapability) setContactNoticeLoading(true); setView('contact'); }} type="button" aria-pressed={view === 'contact'} disabled={runtime.emailNotificationsEnabled && !linkedContactToken}>Contact view</button>
+          </div>}
         </div>
 
         <div className="demo-notice" role="note">
@@ -314,19 +415,23 @@ export default function App() {
         {view === 'contact' ? (
           <section className="contact-preview card">
             <div className="card-topline"><span className="section-kicker">TRUSTED CONTACT VIEW</span><span className="demo-tag">{contactNotice?.notificationStatus === 'SIMULATED' ? 'SIMULATED' : 'PRIVATE LINK'}</span></div>
-            {contactNotice?.status === 'OVERDUE' ? (
+            {contactNoticeLoading && !contactNotice ? (
+              <div className="empty-contact" role="status"><div className="contact-loading-mark" aria-hidden="true" /><h2>Opening the private notice</h2><p>Loading the latest check-in status securely.</p></div>
+            ) : apiError && linkedContactToken && !contactNotice ? (
+              <div className="empty-contact"><div className="quiet-icon" aria-hidden="true">!</div><h2>Notice unavailable</h2><p>We couldn’t load this private notice. Check your connection and reopen the link.</p></div>
+            ) : contactNotice?.status === 'OVERDUE' ? (
               <>
                 <div className="alert-symbol" aria-hidden="true">!</div>
                 <p className="eyebrow alert-eyebrow">CHECK-IN OVERDUE</p>
                 <h2>{contactNotice.contactName} hasn’t checked in yet.</h2>
                 <p className="body-copy">Their journey to <strong>{contactNotice.destinationLabel}</strong> is past the arrival window. This can happen for many reasons; it does not confirm an emergency.</p>
-                <div className="alert-detail"><span>Journey status</span><strong>Overdue · demo alert</strong></div>
-                <div className="alert-detail"><span>Location</span><strong>Not shared</strong></div>
+                <div className="alert-detail"><span>Journey status</span><strong>{contactNotice.notificationStatus === 'SIMULATED' ? 'Overdue · simulated notice' : 'Overdue'}</strong></div>
+                <div className="alert-detail"><span>Location</span><strong>{contactNotice.location ? `Shared once · ${formatLocalTime(contactNotice.location.capturedAt, account?.timezone)}` : 'Not shared'}</strong></div>
                 <div className="alert-detail"><span>Email status</span><strong>{contactNotice.notificationStatus === 'SENT' ? 'Accepted by Gmail SMTP; delivery not confirmed' : contactNotice.notificationStatus === 'QUEUED' ? 'Email queued' : contactNotice.notificationStatus === 'FAILED' ? 'Email not sent' : contactNotice.notificationStatus === 'UNKNOWN' ? 'Send result unknown; not retried' : contactNotice.notificationStatus === 'CANCELLED' ? 'Queued email cancelled before send' : 'Simulated · no message sent'}</strong></div>
                 {contactNotice.location && (
                   <div className="shared-location">
                     <p className="section-kicker">LAST LOCATION SHARED BY TRAVELLER</p>
-                    <p>±{contactNotice.location.accuracyMeters} m · {new Date(contactNotice.location.capturedAt).toLocaleString()}</p>
+                    <p>±{contactNotice.location.accuracyMeters} m · {formatLocalTime(contactNotice.location.capturedAt, account?.timezone)}</p>
                     <a href={`https://www.openstreetmap.org/?mlat=${contactNotice.location.latitude}&mlon=${contactNotice.location.longitude}#map=17/${contactNotice.location.latitude}/${contactNotice.location.longitude}`} target="_blank" rel="noreferrer">Open in OpenStreetMap ↗</a>
                     <small>This opens a third-party map with the shared coordinates.</small>
                   </div>
@@ -354,15 +459,16 @@ export default function App() {
         ) : hasJourney && journey ? (
           <section className="journey-layout">
             <div className={`journey-card card ${status === 'overdue' ? 'is-overdue' : ''}`}>
-              <div className="card-topline"><span className="section-kicker">SERVER-MANAGED JOURNEY</span><span className={`status-pill ${status}`}>{status === 'active' ? 'IN PROGRESS' : 'CHECK-IN OVERDUE'}</span></div>
+              <div className="card-topline"><span className="section-kicker">SERVER-MANAGED JOURNEY</span><span className={`status-pill ${status}`} role="status" aria-live="polite">{status === 'active' ? 'IN PROGRESS' : 'CHECK-IN OVERDUE'}</span></div>
               <div className="timer-area">
-                <div className="timer-ring"><span className="timer-value">{status === 'active' ? formatTime(secondsLeft) : '00:00'}</span><span className="timer-caption">{status === 'active' ? 'remaining' : 'past deadline'}</span></div>
+                <div className="timer-ring" role="timer" aria-label={status === 'active' ? `${formatTime(secondsLeft)} remaining` : 'Past deadline'}><span className="timer-value" aria-live="off">{status === 'active' ? formatTime(secondsLeft) : '00:00'}</span><span className="timer-caption">{status === 'active' ? 'remaining' : 'past deadline'}</span></div>
+                <p className="journey-deadline">Check in by <strong>{formatLocalTime(journey.deadlineAt, account?.timezone)}</strong></p>
               </div>
               <div className="journey-destination"><span className="pin-icon" aria-hidden="true">⌖</span><div><span className="muted-label">Heading to</span><strong>{journey.destinationLabel}</strong></div></div>
-              <div className="journey-contact"><span className={`contact-avatar ${contact?.color ?? 'lavender'}`}>{contact?.initials ?? 'TC'}</span><div><span className="muted-label">Trusted contact</span><strong>{journey.contactName}</strong></div><span className="contact-check" aria-label="Selected">✓</span></div>
+              <div className="journey-contact"><span className={`contact-avatar ${journeyContact?.color ?? 'lavender'}`}>{journeyContact?.initials ?? getInitials(journey.contactName)}</span><div><span className="muted-label">Trusted contact</span><strong>{journey.contactName}</strong></div><span className="contact-check" aria-label="Selected">✓</span></div>
               <div className="location-control">
                 {journey.locationShared
-                  ? <><p>One-time location shared{journey.locationCapturedAt ? ` at ${new Date(journey.locationCapturedAt).toLocaleTimeString()}` : ''} (±{journey.locationAccuracyMeters ?? 'unknown'} m). It appears to your contact only if this journey becomes overdue.</p><button className="text-button" type="button" disabled={busy} onClick={() => void removeSharedLocation()}>Remove shared location</button></>
+                  ? <><p>One-time location shared{journey.locationCapturedAt ? ` at ${formatLocalTime(journey.locationCapturedAt, account?.timezone)}` : ''} (±{journey.locationAccuracyMeters ?? 'unknown'} m). It appears to your contact only if this journey becomes overdue.</p><button className="text-button" type="button" disabled={busy} onClick={() => void removeSharedLocation()}>Remove shared location</button></>
                   : <p>{runtime.locationSharingEnabled ? 'Off by default. Share one current fix; it will appear to your contact only if this journey becomes overdue. No live tracking.' : 'Location sharing is unavailable until encrypted data storage is configured.'}</p>}
                 {!journey.locationShared && runtime.locationSharingEnabled && <button className="button button-secondary full-button" type="button" disabled={busy} onClick={() => void shareCurrentLocation()}>{busy ? 'Getting location…' : 'Share one-time location'}</button>}
               </div>
@@ -397,26 +503,26 @@ export default function App() {
         ) : (
           <section className="setup-layout">
             <form className="setup-card card" onSubmit={startJourney}>
-              <div className="card-topline"><span className="section-kicker">NEW JOURNEY</span><span className="step-label">01 <i /> 02</span></div>
-              <label className="field-label" htmlFor="destination">Where are you heading?</label>
-              <div className="input-wrap"><span aria-hidden="true">⌖</span><input id="destination" maxLength={48} value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="e.g. Home" required /></div>
+              <div className="card-topline"><span className="section-kicker">NEW JOURNEY</span><span className="step-label">Your check-in</span></div>
+              <Label className="field-label" htmlFor="destination">Where are you heading?</Label>
+              <div className="input-wrap"><span aria-hidden="true">⌖</span><Input id="destination" maxLength={48} value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="e.g. Home" required /></div>
               <p className="field-hint">A short label is enough. No address needed.</p>
 
               {runtime.emailNotificationsEnabled ? (
                 <>
-                  <label className="field-label contact-label" htmlFor="trusted-name">Trusted contact</label>
-                  <input className="plain-input" id="trusted-name" value={trustedContactName} onChange={(event) => setTrustedContactName(event.target.value)} maxLength={80} placeholder="Contact’s name" required />
-                  <label className="field-label contact-label" htmlFor="contact-email">Contact email</label>
-                  <input className="plain-input" id="contact-email" type="email" value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} maxLength={254} placeholder="name@example.com" required />
+                  <Label className="field-label contact-label" htmlFor="trusted-name">Trusted contact</Label>
+                  <Input className="plain-input" id="trusted-name" value={trustedContactName} onChange={(event) => setTrustedContactName(event.target.value)} maxLength={80} placeholder="Contact’s name" required />
+                  <Label className="field-label contact-label" htmlFor="contact-email">Contact email</Label>
+                  <Input className="plain-input" id="contact-email" type="email" value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} maxLength={254} placeholder="name@example.com" required />
                   <p className="field-hint">Live demo sends only to addresses approved in the server environment.</p>
                   <label className="consent-check"><input type="checkbox" checked={emailConsent} onChange={(event) => setEmailConsent(event.target.checked)} required /><span>I have permission to share this email and notify this person if I miss my check-in.</span></label>
                 </>
               ) : (
                 <>
-                  <label className="field-label contact-label">Who should know you arrived?</label>
-                  <div className="contact-options" role="radiogroup" aria-label="Choose a trusted contact">
+                  <p className="field-label contact-label" id="contact-options-label">Who should know you arrived?</p>
+                  <div className="contact-options" role="group" aria-labelledby="contact-options-label">
                     {contacts.map((item) => (
-                      <button className={`contact-option ${contactId === item.id ? 'active' : ''}`} key={item.id} type="button" role="radio" aria-checked={contactId === item.id} onClick={() => setContactId(item.id)}>
+                      <button className={`contact-option ${contactId === item.id ? 'active' : ''}`} key={item.id} type="button" aria-pressed={contactId === item.id} onClick={() => setContactId(item.id)}>
                         <span className={`contact-avatar ${item.color}`}>{item.initials}</span><span className="contact-option-copy"><strong>{item.name}</strong><small>{item.relation} · Fictional contact</small></span><span className="radio-dot" />
                       </button>
                     ))}
@@ -425,13 +531,14 @@ export default function App() {
                 </>
               )}
 
-              <label className="field-label window-label" htmlFor="arrival-window">Arrival window</label>
-              <div className="window-control"><span>Allow time to get inside</span><div className="select-wrap"><select id="arrival-window" value={windowMinutes} onChange={(event) => setWindowMinutes(Number(event.target.value))}><option value={5}>5 min</option><option value={10}>10 min</option><option value={15}>15 min</option><option value={20}>20 min</option></select><span aria-hidden="true">⌄</span></div></div>
+              <Label className="field-label window-label" htmlFor="arrival-window">Arrival window</Label>
+              <div className="window-control"><span>Time to arrive and check in</span><div className="select-wrap"><select id="arrival-window" value={windowMinutes} onChange={(event) => setWindowMinutes(Number(event.target.value))}><option value={5}>5 min</option><option value={10}>10 min</option><option value={15}>15 min</option><option value={20}>20 min</option><option value={30}>30 min</option><option value={45}>45 min</option><option value={60}>1 hour</option><option value={90}>1 hr 30</option><option value={120}>2 hours</option></select><span aria-hidden="true">⌄</span></div></div>
               <label className="consent-check"><input type="checkbox" checked={journeyConsent} onChange={(event) => setJourneyConsent(event.target.checked)} required /><span>{runtime.emailNotificationsEnabled ? 'I understand an overdue check-in may send the selected contact an email. Delivery is not guaranteed.' : 'I understand an overdue check-in creates a simulated notice and contacts nobody.'}</span></label>
               <button className="button button-primary full-button start-button" type="submit" disabled={busy || (!runtime.emailNotificationsEnabled && !contact)}>{busy ? 'Starting…' : 'Start journey'} <span aria-hidden="true">→</span></button>
               <p className="form-footnote">Location is never collected automatically. You can choose a one-time share during a journey.</p>
             </form>
             <aside className="side-notes setup-notes">
+              {account && <div className="history-card"><div className="history-heading"><div><span className="section-kicker">YOUR ACTIVITY</span><h3>Recent journeys</h3></div><span className="history-count">{journeyHistory.length}</span></div>{journeyHistory.length ? journeyHistory.slice(0, 4).map((item) => <button className="history-item" type="button" key={item.id} onClick={() => { setJourney(item); setView('traveller'); }}><span className={`history-status ${item.status.toLowerCase()}`} /><span className="history-copy"><strong>{item.destinationLabel}</strong><small>{formatLocalDate(item.startedAt, account.timezone)} · {item.status.toLowerCase()}</small></span><span className="history-arrow">→</span></button>) : <p className="history-empty">Your check-ins will appear here after your first journey.</p>}</div>}
               <div className="side-card"><span className="side-icon mint" aria-hidden="true">✦</span><div><h3>Keep it simple</h3><p>Choose a window that feels right for your usual arrival routine.</p></div></div>
               <div className="side-card"><span className="side-icon sand" aria-hidden="true">⌁</span><div><h3>Your privacy matters</h3><p>Location is off by default. You choose if and when to share one location fix.</p></div></div>
               <div className="quote-card"><span className="quote-mark">“</span><p>A missed check-in is a reason to check in — not a reason to assume.</p><span>SAFEARRIVAL PRINCIPLE</span></div>

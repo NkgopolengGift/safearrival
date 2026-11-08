@@ -2,12 +2,16 @@
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "defaultBase": "main",
   "namedInputs": {
-    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
     "sharedGlobals": []
   },
   "targetDefaults": {
     "build": {
       "cache": true
     }
-  }
+  },
+  "analytics": false
 }

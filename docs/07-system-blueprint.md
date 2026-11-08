@@ -60,7 +60,7 @@ SafeArrival lets a person set a journey arrival window and choose a trusted cont
 
 - Multiple contacts with explicit order and per-contact channel preference; this requires one alert per contact and replaces the MVP's unique-alert-per-journey constraint with a unique `(journey_id, contact_id)` constraint.
 - Contact response notes or a second escalation step, after false-alarm research.
-- Account-based journey history and account deletion, if persistent user accounts are selected.
+- Persistent email/password accounts, session-based journey ownership, onboarding, and journey history are implemented. Account deletion and recovery flows remain outstanding.
 - Optional, user-triggered location capture; do not add continuous tracking.
 - Reminder to the traveller before the deadline only if it can be delivered without unsafe distraction.
 
@@ -90,7 +90,7 @@ All forms need labels, keyboard-operable controls, visible focus, clear inline e
 
 1. Traveller opens the web app and chooses a trusted contact and an arrival window.
 2. Before starting, the interface explains what is shared, when a contact might be notified, how cancellation works, and what the service cannot do. The traveller confirms consent.
-3. The API validates input and creates a `journey` with `ACTIVE` status, `deadline_at`, contact snapshot/reference, and an audit event. It returns a random unguessable traveller capability for future actions if there is no account login.
+3. The API validates input and creates a `journey` with `ACTIVE` status, `deadline_at`, contact snapshot/reference, account owner when signed in, and an audit event. Account sessions authorize owned journeys; the scoped traveller capability remains available for an accountless demo.
 4. The traveller sees a countdown derived from the server deadline. The countdown is not the authority; the backend is.
 5. Traveller may extend the deadline or cancel before expiry. Each change is authenticated, validated, recorded, and returned with the new server deadline/state.
 6. If the traveller explicitly presses “I’m safely inside” before expiry, the API changes state to `COMPLETED`; no alert is sent.
@@ -155,7 +155,7 @@ flowchart TB
 | --- | --- |
 | Workspace | Existing Nx + pnpm monorepo. |
 | Web | Existing React + Vite + TypeScript app; screens, form validation, countdown display, API calls, status and errors. No authority over deadlines. |
-| API | Java 21 / Spring Boot service; validation, capability authorization, journey state transitions, contact views, worker scheduling, and a simulated notification adapter. |
+| API | Java 21 / Spring Boot service; password authentication and sessions, validation, account/capability authorization, journey state transitions, contact views, worker scheduling, and notification delivery. |
 | Database | PostgreSQL through Spring JDBC; Flyway migrations own schema. Never use production auto schema mutation. |
 | Worker | Scheduled tasks in the API process. Conditional database updates make deadline transitions idempotent across overlapping worker runs. Hosting continuity still needs verification before deployment. |
 | Notifications | Gmail SMTP email sender in live mode; simulated in demo mode. Email status means SMTP accepted, not inbox delivery. Ambiguous SMTP outcomes are marked `UNKNOWN` and are not automatically retried because SMTP provides no idempotency key. |
@@ -344,7 +344,7 @@ sequenceDiagram
 
 ## 8. API contract (proposed)
 
-All endpoints use HTTPS and JSON. Exact auth approach is **Open**: account-based authentication is preferable for persistent histories; an accountless demo can use random capability tokens stored only as hashes server-side. Never use sequential IDs as authorization.
+Hosted endpoints use HTTPS and JSON. Accounts use BCrypt password hashes, random session tokens stored only as SHA-256 hashes, and HttpOnly SameSite cookies. Accountless demo journeys continue to use random capability tokens stored only as hashes. Email verification, password recovery, and account deletion remain **Open** before public registration.
 
 | Method and path | Purpose | Key rules |
 | --- | --- | --- |
@@ -457,11 +457,9 @@ Never include sensitive values in validation details. A `401` means no valid aut
 
 ### Authentication and capability lifecycle
 
-This design must choose one mode before implementation. Do not combine a weak demo shortcut with live contact data.
+**Current prototype:** the app supports email/password registration and sign-in, BCrypt password hashes, 30-day revocable server sessions in HttpOnly cookies, and account-owned journey history. The onboarding step stores a timezone and default arrival window. Email ownership verification, password recovery, account deletion, and trusted-contact verification are not implemented. Keep live recipient allowlisting in place.
 
-**Recommended short-deadline demo mode:** no account registration; generate a cryptographically random traveller token for each journey, show it once, and store only its hash. The browser keeps it in memory/session storage only as needed; the API accepts it via a bearer header, never query string. Losing it means the demo journey cannot be managed, which must be explained. Contact link token is independently generated and scoped to one alert. Seeded demo access can be reset.
-
-**Recommended persistent product mode:** use a trusted OIDC identity provider rather than implementing passwords; map stable `sub` to `traveller.auth_subject`; use secure server-side sessions or validated short-lived tokens. Require re-authentication for sensitive contact changes. Account creation, identity provider, recovery, and deletion remain **Open**.
+The prototype also retains accountless, capability-based access for fictional demo journeys and scoped contact links. Traveller and contact capabilities are independently generated; raw values are returned only to the authorized browser/link flow and SHA-256 hashes are stored by the API. Demo journeys can be reset with the local database. Before public production use, replace or formally review the prototype password/session implementation, add account recovery and deletion, verify contact destinations, and add abuse controls.
 
 For either mode:
 
@@ -576,7 +574,8 @@ Maintain separate local, staging/demo, and production-like environments. Names b
 | `APP_BASE_URL` | yes | Canonical HTTPS frontend URL for generated alert links; reject unknown host headers. |
 | `APP_MODE` | yes | `demo` or `live`; demo prevents all external delivery. |
 | `MAIL_USERNAME`, `MAIL_APP_PASSWORD`, `EMAIL_FROM` | live only | Dedicated Gmail sender and App Password; never use the account's normal password. |
-| `LIVE_EMAIL_RECIPIENTS` | live only | Comma-separated recipients permitted in this accountless prototype. |
+| `LIVE_EMAIL_RECIPIENTS` | live only | Comma-separated recipients permitted until trusted-contact verification and abuse controls are implemented. |
+| `AUTH_COOKIE_SECURE` | hosted live | Set to `true` so account-session cookies are sent only over HTTPS. |
 | `DATA_ENCRYPTION_KEY` | live only | Base64-encoded 32-byte key for encrypted recipient payloads and shared location. |
 | `APP_BASE_URL` | yes | Canonical app URL; HTTPS required for hosted live mode. |
 | `CORS_ALLOWED_ORIGINS` | if cross-origin | Exact HTTPS origins, comma-separated; no wildcard with credentials. |
@@ -739,7 +738,7 @@ Before recording/submission, check that browser address bars, screen captures, c
 | --- | --- | --- | --- |
 | D1 | Do interviews validate the gate/arrival grace-period problem? | Treat as a hypothesis; synthesize interview findings before claiming need. | Project team; anonymised interview synthesis. |
 | D2 | Is evaluator demo-only sufficient, or are real alerts mandatory? | Full simulated contact flow, clearly labelled, until assignment rubric confirms live alerts required. | Check assignment brief and supervisor. |
-| D3 | Account login or accountless capabilities? | Accountless for a short-lived demo; accounts for persistent real use. Never ship unscoped public journey IDs. | Team decision after threat/hosting review. |
+| D3 | Account login or accountless capabilities? | Email/password accounts with scoped sessions for persistent history; accountless capability access remains available for demo/contact links. | Email verification, recovery and deletion workflows still need implementation before public launch. |
 | D4 | Which channel/provider? | Gmail SMTP in live prototype mode, with an explicit environment allowlist; this is a bounded demo sender, not a production mail service. | Dedicated Gmail account, App Password availability, approved-recipient test, and inbox check. |
 | D5 | What data retention period? | Keep only active journey data; delete detailed history quickly after completion, duration to be agreed. | User/supervisor and POPIA-informed review. |
 | D6 | Should location ever be shared? | Off by default; a one-time encrypted share is implemented only after explicit user action. Remove or revise after interview evidence. | Interviews and explicit consent design. |
@@ -755,6 +754,6 @@ Demo mode returns both scoped capabilities at journey creation so one browser se
 
 The traveller can explicitly capture and share one current location fix. Coordinates are encrypted with AES-GCM using `DATA_ENCRYPTION_KEY`, omitted from email content, and exposed only through a scoped contact capability. The traveller can remove the fix; after journey completion/cancellation it is retained for at most 24 hours, and unresolved overdue records are purged after seven days. Contact capabilities expire 72 hours after alert creation. These are prototype defaults, not a reviewed production retention policy. The public emergency actions are manual `tel:` links to SAPS 10111 and mobile 112. No dispatch or response-partner integration exists.
 
-User accounts, contact verification, provider delivery receipts, a key rotation workflow, production hosting, and an authorized emergency response partner are not implemented. The project remains a hypothesis until at least three affected-person interviews are synthesised. The current live email recipient allowlist bounds this accountless prototype; remove that restriction only after user authentication, recipient verification, abuse controls, and a privacy review exist.
+Account registration/sign-in, onboarding preferences, revocable sessions, and owner-scoped journey history are implemented. The frontend uses shadcn-style Button, Card, Label, and Input primitives with a shared responsive design system. Email verification, password recovery, account deletion, trusted-contact verification, provider delivery receipts, a key rotation workflow, production hosting, and an authorized emergency response partner are not implemented. The project remains a hypothesis until at least three affected-person interviews are synthesised. Keep the live email recipient allowlist until trusted-contact verification, abuse controls, and a privacy review exist.
 
 Update `docs/05-product-and-technical-design.md` only after interviews and this blueprint's open decisions are resolved; retain it as the short research-led decision summary and use this document as the implementation specification.

@@ -45,7 +45,7 @@ Open the Vite URL printed in the terminal (normally `http://localhost:5173`). Vi
 
 ## Optional: enable a real Gmail sender
 
-The default is `APP_MODE=demo`; it never sends email. Live mode is restricted to the comma-separated addresses in `LIVE_EMAIL_RECIPIENTS` because this prototype has no user accounts or contact verification.
+SafeArrival now has email/password accounts, BCrypt password hashes, 30-day revocable server sessions, onboarding, and account-owned journey history. Email ownership verification and self-service password recovery still need to be added before opening registration to the public. The default `APP_MODE=demo` never sends email. Live notices remain restricted to `LIVE_EMAIL_RECIPIENTS` because trusted-contact email verification is not implemented.
 
 For a dedicated Gmail sender, turn on Google 2-Step Verification and create an App Password if the account offers that option. Use the App Password, not the account password. Google notes that App Passwords are less secure than Sign in with Google and may not be available for some accounts. [Google App Password guidance](https://support.google.com/mail/answer/185833?hl=en)
 
@@ -56,6 +56,7 @@ In the API terminal, configure these environment variables before starting the A
 ```bash
 export APP_MODE=live
 export APP_BASE_URL=http://localhost:5173
+export AUTH_COOKIE_SECURE=false
 export MAIL_USERNAME=your-sender@gmail.com
 export EMAIL_FROM=your-sender@gmail.com
 read -s -p 'Gmail App Password: ' MAIL_APP_PASSWORD
@@ -64,7 +65,7 @@ export LIVE_EMAIL_RECIPIENTS=your-approved-recipient@gmail.com
 export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 ```
 
-`EMAIL_FROM` defaults to `MAIL_USERNAME`; set it only if you have configured an allowed Gmail send-as alias. Add each recipient only after you have permission to share their address and send them overdue alerts. For a hosted deployment, set `APP_BASE_URL` to the public HTTPS URL. The encryption key must stay stable while encrypted records exist; losing or changing it makes those records unreadable.
+`EMAIL_FROM` defaults to `MAIL_USERNAME`; set it only if you have configured an allowed Gmail send-as alias. Add each recipient only after you have permission to share their address and send them overdue alerts. For a hosted deployment, set `APP_BASE_URL` to the public HTTPS URL and `AUTH_COOKIE_SECURE=true`. The encryption key must stay stable while encrypted records exist; losing or changing it makes those records unreadable.
 
 Live email is queued only after the server marks a journey overdue. Gmail SMTP acceptance does not confirm inbox delivery. If the send result is ambiguous, SafeArrival records it as unknown and does not retry automatically, to avoid sending duplicate alerts. SMTP secrets and a real sender are not needed in demo mode.
 

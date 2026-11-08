@@ -42,6 +42,8 @@ The API reads `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from 
 
 The demo supports server-persisted journeys, check-in, cancellation, extension, scheduled overdue processing, and scoped contact acknowledgement. Demo mode simulates notices. Live mode can send an overdue email through a dedicated Gmail SMTP sender, restricted to recipients in `LIVE_EMAIL_RECIPIENTS`. SMTP acceptance is not proof of inbox delivery; an ambiguous result is not retried automatically.
 
+Email/password registration and sign-in, BCrypt password hashing, revocable server sessions, first-run timezone/arrival-window onboarding, and account-owned journey history are implemented. Email verification, password recovery, account deletion, and trusted-contact verification are not implemented; live email remains restricted to the configured recipient allowlist.
+
 The traveller can explicitly share one current browser location fix. Coordinates are encrypted with AES-GCM under `DATA_ENCRYPTION_KEY`, visible only through the contact capability, and can be removed. They are not sent in email or captured in the background. The UI also offers direct `tel:` links for SAPS 10111 and mobile emergency 112; these are user-initiated calls, not app dispatch.
 
 Capabilities are random bearer tokens stored as SHA-256 hashes in PostgreSQL. Demo contacts are fictional and seeded by the first Flyway migration. The core problem and proposed workflow remain hypotheses until the required interviews are synthesised. For run commands and live-only environment setup, see the root README.

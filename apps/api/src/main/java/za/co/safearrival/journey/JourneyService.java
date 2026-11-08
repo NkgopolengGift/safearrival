@@ -72,8 +72,9 @@ public class JourneyService {
     }
 
     @Transactional
-    public JourneyView start(StartJourneyRequest request) {
+    public JourneyView start(StartJourneyRequest request, UUID ownerUserId) {
         boolean live = isLiveMode();
+        if (live && ownerUserId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Create an account to start a live journey.");
         String destination = request.destinationLabel().trim();
         if (destination.isEmpty() || destination.length() > 48 || destination.chars().anyMatch(Character::isISOControl)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_DESTINATION");
@@ -117,40 +118,46 @@ public class JourneyService {
         Instant contactTokenExpiresAt = deadlineAt.plusSeconds(72 * 60 * 60L);
         if (live) emailConsentAt = startedAt;
         jdbc.update(
-            "INSERT INTO journey (id, destination_label, contact_id, contact_name, status, traveller_token_hash, contact_token_hash, contact_token_expires_at, contact_email_ciphertext, contact_email_lookup_hash, email_consent_at, started_at, deadline_at) " +
-                "VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO journey (id, destination_label, contact_id, contact_name, status, traveller_token_hash, contact_token_hash, contact_token_expires_at, contact_email_ciphertext, contact_email_lookup_hash, email_consent_at, started_at, deadline_at, owner_user_id) " +
+                "VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             id, destination, contactId, contactName, hash(travellerToken), contactToken == null ? null : hash(contactToken),
             Timestamp.from(contactTokenExpiresAt), encryptedEmail, emailLookupHash, emailConsentAt == null ? null : Timestamp.from(emailConsentAt),
-            Timestamp.from(startedAt), Timestamp.from(deadlineAt)
+            Timestamp.from(startedAt), Timestamp.from(deadlineAt), ownerUserId
         );
         addEvent(id, "STARTED", "TRAVELLER", "{}", startedAt);
         return new JourneyView(id, destination, contactName, "ACTIVE", startedAt, deadlineAt, clock.instant(), null,
             "NOT_SENT", travellerToken, contactToken, false, null, null);
     }
 
-    public JourneyView get(UUID id, String token) {
-        JourneyRow row = findTravellerJourney(id, token);
+    public JourneyView get(UUID id, String token, UUID ownerUserId) {
+        JourneyRow row = findTravellerJourney(id, token, ownerUserId);
         return view(row, alertDeliveryStatus(id));
     }
 
+    public List<JourneyView> listOwned(UUID ownerUserId) {
+        if (ownerUserId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Sign in to view your journeys.");
+        List<JourneyRow> rows = jdbc.query("SELECT " + JOURNEY_COLUMNS + " FROM journey WHERE owner_user_id = ? ORDER BY started_at DESC LIMIT 50", JOURNEY_MAPPER, ownerUserId);
+        return rows.stream().map(row -> view(row, alertDeliveryStatus(row.id))).toList();
+    }
+
     @Transactional
-    public JourneyView simulateExpiry(UUID id, String token) {
+    public JourneyView simulateExpiry(UUID id, String token, UUID ownerUserId) {
         if (!"demo".equalsIgnoreCase(appMode)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "NOT_FOUND");
         }
-        JourneyRow row = findTravellerJourney(id, token);
+        JourneyRow row = findTravellerJourney(id, token, ownerUserId);
         if (row.status.equals("OVERDUE")) return view(row, alertDeliveryStatus(id));
         if (!row.status.equals("ACTIVE")) throw new ResponseStatusException(HttpStatus.CONFLICT, "JOURNEY_NOT_ACTIVE");
         Instant now = clock.instant();
         int changed = jdbc.update("UPDATE journey SET deadline_at = ?, version = version + 1 WHERE id = ? AND status = 'ACTIVE'", Timestamp.from(now), id);
         if (changed == 0) throw new ResponseStatusException(HttpStatus.CONFLICT, "JOURNEY_NOT_ACTIVE");
         addEvent(id, "DEMO_EXPIRY_TRIGGERED", "TRAVELLER", "{}", now);
-        return view(findTravellerJourney(id, token), "NOT_SENT");
+        return view(findTravellerJourney(id, token, ownerUserId), "NOT_SENT");
     }
 
     @Transactional
-    public JourneyView transition(UUID id, String token, Action action, Integer extensionMinutes) {
-        JourneyRow row = findTravellerJourney(id, token);
+    public JourneyView transition(UUID id, String token, Action action, Integer extensionMinutes, UUID ownerUserId) {
+        JourneyRow row = findTravellerJourney(id, token, ownerUserId);
         Instant now = clock.instant();
         switch (action) {
             case CHECK_IN -> {
@@ -189,7 +196,7 @@ public class JourneyService {
                 addEvent(id, "DEADLINE_EXTENDED", "TRAVELLER", "{\"minutes\":" + extensionMinutes + "}", now);
             }
         }
-        return view(findTravellerJourney(id, token), alertDeliveryStatus(id));
+        return view(findTravellerJourney(id, token, ownerUserId), alertDeliveryStatus(id));
     }
 
     public ContactAlertView contactView(String token) {
@@ -226,9 +233,9 @@ public class JourneyService {
     }
 
     @Transactional
-    public JourneyView shareLocation(UUID id, String token, ShareLocationRequest request) {
+    public JourneyView shareLocation(UUID id, String token, ShareLocationRequest request, UUID ownerUserId) {
         if (!dataProtector.isConfigured()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "LOCATION_ENCRYPTION_NOT_CONFIGURED");
-        JourneyRow row = findTravellerJourney(id, token);
+        JourneyRow row = findTravellerJourney(id, token, ownerUserId);
         if (!row.status.equals("ACTIVE") && !row.status.equals("OVERDUE")) throw new ResponseStatusException(HttpStatus.CONFLICT, "JOURNEY_NOT_ACTIVE");
         Instant now = clock.instant();
         if (!Double.isFinite(request.latitude()) || request.latitude() < -90 || request.latitude() > 90 ||
@@ -248,16 +255,16 @@ public class JourneyService {
         jdbc.update("UPDATE journey SET shared_location_ciphertext = ?, location_accuracy_m = ?, location_captured_at = ?, location_consent_at = ?, location_expires_at = NULL, version = version + 1 WHERE id = ?",
             protectedLocation, request.accuracyMeters(), Timestamp.from(request.capturedAt()), Timestamp.from(now), id);
         addEvent(id, "LOCATION_SHARED", "TRAVELLER", "{\"accuracyMeters\":" + request.accuracyMeters() + "}", now);
-        return view(findTravellerJourney(id, token), alertDeliveryStatus(id));
+        return view(findTravellerJourney(id, token, ownerUserId), alertDeliveryStatus(id));
     }
 
     @Transactional
-    public JourneyView removeLocation(UUID id, String token) {
-        findTravellerJourney(id, token);
+    public JourneyView removeLocation(UUID id, String token, UUID ownerUserId) {
+        findTravellerJourney(id, token, ownerUserId);
         Instant now = clock.instant();
         jdbc.update("UPDATE journey SET shared_location_ciphertext = NULL, location_accuracy_m = NULL, location_captured_at = NULL, location_consent_at = NULL, location_expires_at = NULL, version = version + 1 WHERE id = ?", id);
         addEvent(id, "LOCATION_REMOVED", "TRAVELLER", "{}", now);
-        return view(findTravellerJourney(id, token), alertDeliveryStatus(id));
+        return view(findTravellerJourney(id, token, ownerUserId), alertDeliveryStatus(id));
     }
 
     @Scheduled(fixedDelayString = "${app.expiry-poll-ms:1000}")
@@ -335,11 +342,11 @@ public class JourneyService {
         addEvent(id, "OVERDUE", "SYSTEM", "{}", now);
     }
 
-    private JourneyRow findTravellerJourney(UUID id, String token) {
-        if (token == null || token.isBlank()) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "INVALID_CAPABILITY");
+    private JourneyRow findTravellerJourney(UUID id, String token, UUID ownerUserId) {
+        if ((token == null || token.isBlank()) && ownerUserId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "INVALID_CAPABILITY");
         return jdbc.query(
-            "SELECT " + JOURNEY_COLUMNS + " FROM journey WHERE id = ? AND traveller_token_hash = ?",
-            JOURNEY_MAPPER, id, hash(token)
+            "SELECT " + JOURNEY_COLUMNS + " FROM journey WHERE id = ? AND (traveller_token_hash = ? OR (? IS NOT NULL AND owner_user_id = ?))",
+            JOURNEY_MAPPER, id, token == null || token.isBlank() ? "" : hash(token), ownerUserId, ownerUserId
         ).stream().findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "JOURNEY_UNAVAILABLE"));
     }
 

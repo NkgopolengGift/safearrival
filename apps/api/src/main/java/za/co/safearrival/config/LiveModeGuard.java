@@ -14,6 +14,7 @@ public class LiveModeGuard implements ApplicationRunner {
     private final String baseUrl;
     private final String encryptionKey;
     private final String recipientAllowlist;
+    private final boolean secureAuthCookie;
 
     public LiveModeGuard(
         @Value("${app.mode:demo}") String mode,
@@ -22,7 +23,8 @@ public class LiveModeGuard implements ApplicationRunner {
         @Value("${app.email-from:}") String emailFrom,
         @Value("${app.base-url:}") String baseUrl,
         @Value("${app.data-encryption-key:}") String encryptionKey,
-        @Value("${app.email-allowlist:}") String recipientAllowlist
+        @Value("${app.email-allowlist:}") String recipientAllowlist,
+        @Value("${app.auth-cookie-secure:false}") boolean secureAuthCookie
     ) {
         this.mode = mode;
         this.mailUsername = mailUsername;
@@ -31,6 +33,7 @@ public class LiveModeGuard implements ApplicationRunner {
         this.baseUrl = baseUrl;
         this.encryptionKey = encryptionKey;
         this.recipientAllowlist = recipientAllowlist;
+        this.secureAuthCookie = secureAuthCookie;
     }
 
     @Override
@@ -43,12 +46,15 @@ public class LiveModeGuard implements ApplicationRunner {
             throw new IllegalStateException("Live mode requires DATA_ENCRYPTION_KEY");
         }
         if (blank(recipientAllowlist)) {
-            throw new IllegalStateException("Live mode requires LIVE_EMAIL_RECIPIENTS to restrict this accountless demo to approved recipients");
+            throw new IllegalStateException("Live mode requires LIVE_EMAIL_RECIPIENTS to restrict outgoing notices to approved recipients");
         }
         boolean localDevelopmentUrl = baseUrl != null &&
             (baseUrl.startsWith("http://localhost:") || baseUrl.startsWith("http://127.0.0.1:"));
         if (baseUrl == null || (!baseUrl.startsWith("https://") && !localDevelopmentUrl)) {
             throw new IllegalStateException("Live mode requires APP_BASE_URL to use HTTPS (HTTP localhost is allowed for local development)");
+        }
+        if (!secureAuthCookie && !localDevelopmentUrl) {
+            throw new IllegalStateException("Live deployments require AUTH_COOKIE_SECURE=true");
         }
     }
 

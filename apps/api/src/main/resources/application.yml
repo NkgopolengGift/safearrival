@@ -21,6 +21,7 @@ spring:
       mail.smtp.writetimeout: 15000
 app:
   mode: ${APP_MODE:demo}
+  auth-cookie-secure: ${AUTH_COOKIE_SECURE:false}
   expiry-poll-ms: ${EXPIRY_POLL_MS:1000}
   base-url: ${APP_BASE_URL:http://localhost:5173}
   data-encryption-key: ${DATA_ENCRYPTION_KEY:}
