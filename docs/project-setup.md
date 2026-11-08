@@ -40,4 +40,6 @@ The API reads `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from 
 
 ## Current state
 
-This is an initial scaffold. It does not yet implement journeys, accounts, authentication, check-in deadlines, or real notifications. The visible frontend message is only a placeholder for the product flow.
+The demo implements server-persisted journeys, check-in, cancellation, deadline extension, scheduled overdue processing, and a scoped contact notice/acknowledgement flow. It uses random bearer capabilities stored as hashes in PostgreSQL and two fictional seeded contacts. External notifications, location, and account registration are not implemented. Alerts are always simulated.
+
+Start the database with `docker compose up -d`, then run `pnpm nx run api:dev` and `pnpm dev` in separate terminals. The web dev server proxies `/api` to the API. The proposed problem and workflow remain unvalidated until the required interviews are synthesised.

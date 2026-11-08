@@ -2,13 +2,14 @@ spring:
   application:
     name: safearrival-api
   datasource:
-    url: ${DATABASE_URL:}
-    username: ${DATABASE_USERNAME:}
-    password: ${DATABASE_PASSWORD:}
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    open-in-view: false
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/safearrival}
+    username: ${DATABASE_USERNAME:safearrival}
+    password: ${DATABASE_PASSWORD:safearrival-local}
+  flyway:
+    enabled: true
+app:
+  mode: ${APP_MODE:demo}
+  expiry-poll-ms: ${EXPIRY_POLL_MS:1000}
 management:
   endpoints:
     web:

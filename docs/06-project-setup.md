@@ -40,5 +40,9 @@ The API reads `DATABASE_URL`, `DATABASE_USERNAME`, and `DATABASE_PASSWORD` from 
 
 ## Current state
 
-This is an initial scaffold. It does not yet implement journeys, accounts, authentication, check-in deadlines, or real notifications. The visible frontend message is a placeholder for the product flow. The prototype scope should be revisited after interviews.
+The current demo supports server-persisted journey creation, check-in, cancellation, deadline extension, scheduled overdue processing, and a scoped contact notice/acknowledgement flow. Traveller/contact capabilities are random bearer tokens stored as hashes in PostgreSQL; the browser keeps the raw demo tokens in session storage. Two fictional contacts are seeded by the first Flyway migration.
+
+The demo's only notification outcome is `SIMULATED`; it never contacts email, SMS, a trusted person, or emergency services. Location sharing, user accounts, multi-contact escalation, and external delivery remain out of scope. The core problem and proposed workflow remain hypotheses until the required interviews are synthesised.
+
+For local development, start PostgreSQL with `docker compose up -d`, run `pnpm nx run api:dev`, then run `pnpm dev` in another terminal. The web dev server proxies `/api` to the API. See the root README for the complete steps.
 

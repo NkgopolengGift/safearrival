@@ -155,9 +155,9 @@ flowchart TB
 | --- | --- |
 | Workspace | Existing Nx + pnpm monorepo. |
 | Web | Existing React + Vite + TypeScript app; screens, form validation, countdown display, API calls, status and errors. No authority over deadlines. |
-| API | Existing Java 21 / Spring Boot service; validation, authorization, journey state transitions, contact views, worker scheduling, provider adapter. |
-| Database | PostgreSQL; migrations own schema. Replace `ddl-auto: validate` only after adding migrations; never use production auto schema mutation. |
-| Worker | Initially scheduled task in the API process, protected by DB row locking/claim semantics. If hosting sleeps or scales to multiple replicas, move to always-on worker/managed scheduler or use a DB-backed lease. |
+| API | Java 21 / Spring Boot service; validation, capability authorization, journey state transitions, contact views, worker scheduling, and a simulated notification adapter. |
+| Database | PostgreSQL through Spring JDBC; Flyway migrations own schema. Never use production auto schema mutation. |
+| Worker | Scheduled task in the API process. Conditional database updates make deadline transitions idempotent across overlapping worker runs. Hosting continuity still needs verification before deployment. |
 | Notifications | Adapter interface. **Open:** choose email or SMS and verify provider, cost, delivery receipts, and test-mode limits before live use. |
 | Hosting | **Open:** verify a host for Java 21, persistent scheduling, outbound provider connectivity, HTTPS, secrets, free-tier limits/sleep, and database networking. |
 
@@ -641,11 +641,11 @@ Verification is required before calling a hosted build usable. Cover these behav
 
 ### Implementation map for this repository
 
-Proposed package layout; adapt names to the team's conventions while keeping responsibilities separated:
+Current package layout and planned extensions:
 
 ```text
 apps/api/src/main/java/za/co/safearrival/
-  journey/       controller, request/response DTOs, service, state rules
+  journey/       controller, request/response DTOs, JDBC service, state rules
   contact/       contact ownership and confirmation
   alert/         scoped contact view and acknowledgement
   notification/  outbox worker, provider interface, demo adapter
@@ -660,9 +660,9 @@ apps/web/src/
   lib/           typed API client, auth capability handling
 ```
 
-Keep controllers thin. Controllers parse/validate transport input; services enforce authorization and state transitions; repositories perform conditional/locked persistence; provider adapters own channel-specific formatting and callbacks. Inject a `Clock` so deadlines and tests use one consistent time source. Implement the expiry worker in small batches and expose only aggregate health metrics.
+Keep controllers thin. Controllers parse/validate transport input; services enforce capability authorization and state transitions; JDBC operations perform conditional persistence; provider adapters own channel-specific formatting and callbacks. Inject a `Clock` so deadlines and verification use one consistent time source. Implement the expiry worker in small batches and expose only aggregate health metrics.
 
-Use Flyway as the proposed migration tool because schema changes need a simple ordered SQL history; add its dependency/configuration before the first entity is deployed. Keep Hibernate schema mode at `validate`, apply migrations as a release step, and do not generate production schema from JPA entities. Create a `V1` migration with tables/enums/indexes/foreign keys, then later migrations for outbox and optional location. Seed/reset fictional demo data with a separate explicit command/profile; never run seed reset against production-like live data.
+Flyway is configured as the schema migration tool. The initial migration creates the demo contacts, journeys, events, scoped contact alerts, notification outbox, and simulated attempt tables. The Compose reset command removes only the local demo volume and reseeds fictional contacts on API startup. Do not run a destructive reset against production-like data.
 
 ### Walkthrough script and evaluator checklist
 
@@ -748,6 +748,10 @@ Before recording/submission, check that browser address bars, screen captures, c
 
 ## 14. Current repository alignment
 
-The repository already contains the Nx/pnpm React/Vite frontend and a Spring Boot 3 / Java 21 API scaffold with PostgreSQL/JPA dependencies. The web app currently has a local-only journey screen prototype; it is not connected to the API and its browser countdown is not a server deadline. The API has no journey controllers, persistence entities, migrations, authentication, scheduler, or notification integration. Existing database configuration uses `ddl-auto: validate`, appropriate once migrations/schema exist. Frontend/API hosting and provider remain undecided in the setup notes.
+The repository contains an Nx/pnpm React/Vite frontend and a Spring Boot 3 / Java 21 API. The current implementation uses PostgreSQL with Flyway and JDBC (rather than JPA entities), random traveller/contact bearer capabilities stored as SHA-256 hashes, a server-owned journey deadline, scheduled overdue processing, an in-app simulated outbox record, and a contact acknowledgement view. The Vite dev server proxies `/api` to the local API. `compose.yaml` provides a local PostgreSQL service with demo-only credentials.
+
+The demo returns both scoped capabilities at journey creation so the same browser session can preview the traveller and contact roles. It stores those capabilities in `sessionStorage`, never sends an external notification, and does not collect location. The overdue simulation sets the deadline to server time; the scheduled worker performs the actual overdue transition. Terminal journey details are purged after seven days, and contact capabilities expire 72 hours after the configured deadline. These settings are demo implementation defaults, not a reviewed production retention policy.
+
+Accounts, contact management, real notification delivery, provider callbacks, hosting, and production key management are not implemented. The project remains a hypothesis until at least three affected-person interviews are synthesised. Frontend/API hosting and any live provider remain open decisions.
 
 Update `docs/05-product-and-technical-design.md` only after interviews and this blueprint's open decisions are resolved; retain it as the short research-led decision summary and use this document as the implementation specification.
